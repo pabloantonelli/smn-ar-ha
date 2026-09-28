@@ -90,8 +90,8 @@ def draw_province_outline(
     deg2pixel: Any,
     origin_x: float,
     origin_y: float,
-    color: tuple[int, int, int, int] = (235, 235, 235, 210),
-    width: int = 1,
+    color: tuple[int, int, int, int] = (255, 45, 85, 235),
+    width: int = 2,
 ) -> None:
     """Draw a province's outline on `frame`, given a lon/lat -> world-pixel function.
 
@@ -100,8 +100,12 @@ def draw_province_outline(
     (Web Mercator world pixels minus the mosaic's own top-left corner), so
     this overlay lines up with whatever imagery is already on `frame`.
 
-    Default color is a light, thin line — meant to read as a subtle map
-    reference, not compete visually with cloud/alert overlays.
+    Default is a thin pink/red line with a dark halo underneath: a plain
+    light line (the original choice) disappeared against cloud cover,
+    which is most of what these images show — pink/red is a color GOES
+    imagery itself never produces (land/ocean/cloud are all
+    white/blue/green/brown), so it stays visible over any of them, and the
+    halo keeps it visible on bright cloud without needing a heavier line.
     """
     from PIL import ImageDraw
 
@@ -112,4 +116,44 @@ def draw_province_outline(
             px, py = deg2pixel(lat, lon)
             points.append((px - origin_x, py - origin_y))
         if len(points) >= 2:
-            draw.line(points + [points[0]], fill=color, width=width)
+            closed = points + [points[0]]
+            draw.line(closed, fill=(0, 0, 0, 140), width=width + 2)
+            draw.line(closed, fill=color, width=width)
+
+
+def draw_region_overlay(
+    frame: Any,
+    rings: list[list[tuple[float, float]]],
+    deg2pixel: Any,
+    origin_x: float,
+    origin_y: float,
+    darken_alpha: int = 130,
+) -> None:
+    """Darken everything outside `rings` (a spotlight effect), then draw the outline.
+
+    Makes the country/province stand out even where the outline color
+    alone would be hard to pick out (e.g. thin slivers of a wiggly
+    border), and reads immediately as "this is the area that matters"
+    without having to trace the line. Rings with holes aren't a concern
+    here (Argentina's provinces are all simple polygons), so this just
+    unions every ring's filled interior into one "keep lit" mask.
+    """
+    from PIL import Image, ImageDraw
+
+    mask = Image.new("L", frame.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    for ring in rings:
+        points = [
+            (px - origin_x, py - origin_y)
+            for lon, lat in ring
+            for px, py in [deg2pixel(lat, lon)]
+        ]
+        if len(points) >= 3:
+            mask_draw.polygon(points, fill=255)
+
+    alpha = mask.point(lambda inside: 0 if inside else darken_alpha)
+    overlay = Image.new("RGBA", frame.size, (0, 0, 0, 255))
+    overlay.putalpha(alpha)
+    frame.alpha_composite(overlay)
+
+    draw_province_outline(frame, rings, deg2pixel, origin_x, origin_y)

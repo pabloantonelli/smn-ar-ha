@@ -114,6 +114,9 @@
       },
       "satellite_province": {
         "name": "Satélite (provincia)"
+      },
+      "satellite_province_animation": {
+        "name": "Satélite provincia (animado)"
       }
     },
     "sensor": {

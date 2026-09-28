@@ -27,12 +27,15 @@ from .const import (
     RADAR_UPDATE_INTERVAL,
     RAINVIEWER_ATTRIBUTION,
     SATELLITE_ANIMATION_UPDATE_INTERVAL,
+    SATELLITE_PROVINCE_FILL_FACTOR,
+    SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL,
     SATELLITE_REGION_UPDATE_INTERVAL,
     SATELLITE_UPDATE_INTERVAL,
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .radar import build_radar_snapshot_jpeg
 from .satellite import (
+    build_region_animation_gif,
     build_region_snapshot_jpeg,
     build_satellite_animation_gif,
     build_satellite_snapshot_jpeg,
@@ -63,6 +66,7 @@ async def async_setup_entry(
             ),
             SMNSatelliteCountryCamera(coordinator, config_entry, name),
             SMNSatelliteProvinceCamera(coordinator, config_entry, name),
+            SMNSatelliteProvinceAnimationCamera(coordinator, config_entry, name),
         ]
     )
 
@@ -534,7 +538,9 @@ class SMNSatelliteProvinceCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordin
                 return
 
             session = async_get_clientsession(self.hass)
-            image = await build_region_snapshot_jpeg(session, rings, is_up(self.hass))
+            image = await build_region_snapshot_jpeg(
+                session, rings, is_up(self.hass), fill_factor=SATELLITE_PROVINCE_FILL_FACTOR
+            )
             if image:
                 self._cached_image = image
             elif not self._cached_image:
@@ -546,6 +552,105 @@ class SMNSatelliteProvinceCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordin
         except Exception as err:  # noqa: BLE001
             _LOGGER.error(
                 "Error building province satellite image: %s", err, exc_info=True
+            )
+        finally:
+            self._refreshing = False
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        if self._cached_image is None and not self._refreshing:
+            await self._async_refresh()
+        return self._cached_image
+
+
+
+class SMNSatelliteProvinceAnimationCamera(
+    CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera
+):
+    """Animated GIF (last hour) zoomed to fit the configured location's province.
+
+    Same idea as SMNSatelliteAnimationCamera (shared as a URL, not meant
+    for attachment — see its docstring) but at the province's own
+    zoom-to-fit level instead of the fixed local zoom, and with the extra
+    SATELLITE_PROVINCE_FILL_FACTOR zoom bump the static province camera
+    also uses.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "satellite_province_animation"
+    _attr_attribution = GIBS_ATTRIBUTION
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        name: str,
+    ) -> None:
+        super().__init__(coordinator)
+        Camera.__init__(self)
+        self.content_type = "image/gif"
+        self._attr_unique_id = f"{config_entry.entry_id}_satellite_province_animation"
+        self._attr_name = f"{name} Satélite provincia (animado)"
+        self._cached_image: bytes | None = None
+        self._config_entry = config_entry
+        self._refreshing = False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.hass.async_create_task(self._async_refresh())
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass,
+                self._async_scheduled_refresh,
+                timedelta(seconds=SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL),
+            )
+        )
+
+    async def _async_scheduled_refresh(self, _now=None) -> None:
+        await self._async_refresh()
+
+    async def _async_refresh(self) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            from homeassistant.helpers.sun import is_up
+
+            data = self.coordinator.data
+            current_weather = data.current_weather_data if data else None
+            province = (current_weather or {}).get("province")
+            rings = get_province_rings(province) if province else None
+            if not rings:
+                _LOGGER.debug(
+                    "No matching province outline yet for %r, skipping refresh", province
+                )
+                return
+
+            session = async_get_clientsession(self.hass)
+            image = await build_region_animation_gif(
+                session, rings, is_up(self.hass), fill_factor=SATELLITE_PROVINCE_FILL_FACTOR
+            )
+            if image:
+                self._cached_image = image
+            elif not self._cached_image:
+                _LOGGER.warning(
+                    "No province satellite animation available yet for %s "
+                    "(GIBS fetch failed and no cached frames exist)",
+                    province,
+                )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error(
+                "Error building province satellite animation: %s", err, exc_info=True
             )
         finally:
             self._refreshing = False

@@ -29,7 +29,7 @@ import async_timeout
 
 _FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf")
 
-from .boundaries import draw_province_outline, get_country_rings
+from .boundaries import draw_region_overlay, get_country_rings
 from .const import (
     BASEMAP_TILE_URL_TEMPLATE,
     BASEMAP_USER_AGENT,
@@ -569,7 +569,7 @@ async def build_radar_snapshot_jpeg(
         half = RADAR_TILE_GRID // 2
         origin_x = (center_x - half) * RADAR_TILE_SIZE
         origin_y = (center_y - half) * RADAR_TILE_SIZE
-        draw_province_outline(
+        draw_region_overlay(
             frame, rings, lambda lat, lon: _deg2pixel(lat, lon, RADAR_ZOOM), origin_x, origin_y
         )
 

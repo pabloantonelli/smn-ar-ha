@@ -140,6 +140,12 @@ GIBS_MAX_ZOOM_INFRARED: Final = 6
 # size (cost) and how much of the grid the area is allowed to fill.
 SATELLITE_REGION_TILE_GRID: Final = 6
 SATELLITE_REGION_UPDATE_INTERVAL: Final = 900  # 15 min
+# How tight the province view's zoom-to-fit is: >1 deliberately lets the
+# province's bbox exceed the tile grid (cropping corners a bit) for a
+# noticeably closer zoom than the default fit (country camera keeps the
+# default 0.9, since Argentina's elongated shape already fills the frame).
+SATELLITE_PROVINCE_FILL_FACTOR: Final = 1.35
+SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL: Final = 1800  # 30 min: N frames × N tiles, pricier still
 
 # Default onboarding locations (Buenos Aires)
 DEFAULT_HOME_LATITUDE: Final = -34.6037

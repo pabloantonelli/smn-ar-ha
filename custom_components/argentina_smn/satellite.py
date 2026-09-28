@@ -16,7 +16,7 @@ from typing import Any
 import aiohttp
 import async_timeout
 
-from .boundaries import draw_province_outline, get_bbox, get_country_rings, get_province_rings
+from .boundaries import draw_region_overlay, get_bbox, get_country_rings, get_province_rings
 from .const import (
     GIBS_LAYER_GEOCOLOR,
     GIBS_LAYER_INFRARED,
@@ -61,15 +61,24 @@ def _max_zoom_for(is_daytime: bool) -> int:
 
 
 def _zoom_for_bbox(
-    min_lat: float, min_lon: float, max_lat: float, max_lon: float, tile_grid: int, max_zoom: int
+    min_lat: float,
+    min_lon: float,
+    max_lat: float,
+    max_lon: float,
+    tile_grid: int,
+    max_zoom: int,
+    fill_factor: float = 0.9,
 ) -> int:
     """Find the highest zoom level at which the bbox still fits the tile grid.
 
     Searches from max_zoom down to 0 and picks the first level where the
-    bbox's projected pixel span fits within `tile_grid` tiles (with a 10%
-    margin so the outline isn't flush against the image edge).
+    bbox's projected pixel span fits within `tile_grid` tiles times
+    `fill_factor`. A lower fill_factor (e.g. the default 0.9) leaves a
+    margin so the outline isn't flush against the edge; a higher one
+    (>1) deliberately lets the bbox exceed the grid — corners get
+    cropped — in exchange for a noticeably tighter zoom.
     """
-    budget = tile_grid * SATELLITE_TILE_SIZE * 0.9
+    budget = tile_grid * SATELLITE_TILE_SIZE * fill_factor
     for zoom in range(max_zoom, -1, -1):
         x0, y0 = _deg2pixel(max_lat, min_lon, zoom)
         x1, y1 = _deg2pixel(min_lat, max_lon, zoom)
@@ -317,7 +326,7 @@ def _draw_outline(frame: Any, center_x: int, center_y: int) -> None:
     half = SATELLITE_TILE_GRID // 2
     origin_x = (center_x - half) * SATELLITE_TILE_SIZE
     origin_y = (center_y - half) * SATELLITE_TILE_SIZE
-    draw_province_outline(
+    draw_region_overlay(
         frame, rings, lambda lat, lon: _deg2pixel(lat, lon, SATELLITE_ZOOM), origin_x, origin_y
     )
 
@@ -408,48 +417,27 @@ async def build_satellite_animation_gif(
     return buffer.getvalue()
 
 
-async def build_region_snapshot_jpeg(
+async def _fetch_region_mosaic(
     session: aiohttp.ClientSession,
-    rings: list[list[tuple[float, float]]],
-    is_daytime: bool,
-) -> bytes | None:
-    """Build a static JPEG covering a whole area (a province, or all of Argentina).
-
-    Unlike build_satellite_snapshot_jpeg (fixed zoom around one lat/lon),
-    the zoom level here is computed from `rings`' own bounding box so the
-    whole area fits the frame — this is what lets a dedicated "Córdoba" or
-    "Argentina" camera actually show the full province/country, which
-    isn't possible at the local camera's fixed street-level-ish zoom.
-    Its own outline is drawn on top, thin and light (see
-    boundaries.draw_province_outline's defaults).
-    """
-    if not rings:
-        return None
-    layer, matrix_set = _layer_for(is_daytime)
-    max_zoom = _max_zoom_for(is_daytime)
-    min_lat, min_lon, max_lat, max_lon = get_bbox(rings)
-    zoom = _zoom_for_bbox(min_lat, min_lon, max_lat, max_lon, SATELLITE_REGION_TILE_GRID, max_zoom)
-
-    center_lat = (min_lat + max_lat) / 2
-    center_lon = (min_lon + max_lon) / 2
-    center_x, center_y = _deg2tile(center_lat, center_lon, zoom)
-
-    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
-    if latest_time is None:
-        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
-        return None
+    layer: str,
+    matrix_set: str,
+    when: datetime,
+    zoom: int,
+    center_x: int,
+    center_y: int,
+) -> tuple[Any, bool]:
+    """Same as _fetch_mosaic, but at an arbitrary zoom and SATELLITE_REGION_TILE_GRID size."""
+    from PIL import Image
 
     half = SATELLITE_REGION_TILE_GRID // 2
-    from PIL import Image as PILImage
-
-    mosaic = PILImage.new(
+    mosaic = Image.new(
         "RGBA",
         (
             SATELLITE_TILE_SIZE * SATELLITE_REGION_TILE_GRID,
             SATELLITE_TILE_SIZE * SATELLITE_REGION_TILE_GRID,
         ),
     )
-    time_str = latest_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    time_str = when.strftime("%Y-%m-%dT%H:%M:%SZ")
     positions = [(dx, dy) for dx in range(-half, half + 1) for dy in range(-half, half + 1)]
     urls = [
         GIBS_TILE_URL_TEMPLATE.format(
@@ -463,17 +451,118 @@ async def build_region_snapshot_jpeg(
         for dx, dy in positions
     ]
     tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
+    complete = all(tile is not None for tile in tiles)
     for (dx, dy), tile_img in zip(positions, tiles):
         if tile_img is None:
-            tile_img = PILImage.new("RGBA", (SATELLITE_TILE_SIZE, SATELLITE_TILE_SIZE), (0, 0, 0, 0))
+            tile_img = Image.new("RGBA", (SATELLITE_TILE_SIZE, SATELLITE_TILE_SIZE), (0, 0, 0, 0))
         mosaic.paste(tile_img, ((dx + half) * SATELLITE_TILE_SIZE, (dy + half) * SATELLITE_TILE_SIZE))
+    return mosaic, complete
 
+
+def _region_center_and_zoom(
+    rings: list[list[tuple[float, float]]], is_daytime: bool, fill_factor: float
+) -> tuple[str, str, int, int, int, int, int]:
+    """Resolve (layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y) for `rings`."""
+    layer, matrix_set = _layer_for(is_daytime)
+    max_zoom = _max_zoom_for(is_daytime)
+    min_lat, min_lon, max_lat, max_lon = get_bbox(rings)
+    zoom = _zoom_for_bbox(
+        min_lat, min_lon, max_lat, max_lon, SATELLITE_REGION_TILE_GRID, max_zoom, fill_factor
+    )
+    center_lat = (min_lat + max_lat) / 2
+    center_lon = (min_lon + max_lon) / 2
+    center_x, center_y = _deg2tile(center_lat, center_lon, zoom)
+    half = SATELLITE_REGION_TILE_GRID // 2
     origin_x = (center_x - half) * SATELLITE_TILE_SIZE
     origin_y = (center_y - half) * SATELLITE_TILE_SIZE
-    draw_province_outline(
+    return layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y
+
+
+async def build_region_snapshot_jpeg(
+    session: aiohttp.ClientSession,
+    rings: list[list[tuple[float, float]]],
+    is_daytime: bool,
+    fill_factor: float = 0.9,
+) -> bytes | None:
+    """Build a static JPEG covering a whole area (a province, or all of Argentina).
+
+    Unlike build_satellite_snapshot_jpeg (fixed zoom around one lat/lon),
+    the zoom level here is computed from `rings`' own bounding box so the
+    whole area fits the frame — this is what lets a dedicated "Córdoba" or
+    "Argentina" camera actually show the full province/country, which
+    isn't possible at the local camera's fixed street-level-ish zoom.
+    `fill_factor` controls how tight that fit is — see _zoom_for_bbox.
+    Its own outline is drawn on top (see boundaries.draw_province_outline).
+    """
+    if not rings:
+        return None
+    layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
+        rings, is_daytime, fill_factor
+    )
+
+    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
+    if latest_time is None:
+        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
+        return None
+
+    mosaic, _complete = await _fetch_region_mosaic(
+        session, layer, matrix_set, latest_time, zoom, center_x, center_y
+    )
+    draw_region_overlay(
         mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
     )
 
     buffer = io.BytesIO()
     mosaic.convert("RGB").save(buffer, format="JPEG", quality=85)
+    return buffer.getvalue()
+
+
+async def build_region_animation_gif(
+    session: aiohttp.ClientSession,
+    rings: list[list[tuple[float, float]]],
+    is_daytime: bool,
+    fill_factor: float = 0.9,
+) -> bytes | None:
+    """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES frames for a whole area.
+
+    Same idea as build_satellite_animation_gif, but zoomed to fit `rings`'
+    bounding box (see build_region_snapshot_jpeg) instead of a fixed zoom
+    around a lat/lon — used for the province animation camera.
+    """
+    if not rings:
+        return None
+    layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
+        rings, is_daytime, fill_factor
+    )
+
+    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
+    if latest_time is None:
+        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
+        return None
+    times = _recent_frame_times(latest_time, SATELLITE_ANIMATION_FRAMES)
+
+    results = await asyncio.gather(
+        *(
+            _fetch_region_mosaic(session, layer, matrix_set, when, zoom, center_x, center_y)
+            for when in times
+        )
+    )
+    kept = [mosaic for mosaic, complete in results if complete]
+    for mosaic in kept:
+        draw_region_overlay(
+            mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
+        )
+    frames = [mosaic.convert("RGB") for mosaic in kept]
+    if not frames:
+        return None
+
+    buffer = io.BytesIO()
+    frames[0].save(
+        buffer,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=400,
+        loop=0,
+    )
     return buffer.getvalue()
