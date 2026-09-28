@@ -105,6 +105,31 @@ RADAR_COLOR_SCHEME: Final = 2  # "Universal Blue"
 RAINVIEWER_MAX_ZOOM: Final = 7
 RADAR_UPDATE_INTERVAL: Final = 600  # 10 min, matches RainViewer's frame cadence
 
+# Satellite imagery: NASA GIBS (Global Imagery Browse Services), a public
+# WMTS/XYZ tile service (no API key) built on the same GOES-East ABI data
+# NOAA STAR publishes, but exposed as a real zoomable tile pyramid in
+# standard Web Mercator — unlike NOAA STAR's cdn.star.nesdis.noaa.gov,
+# which only serves a handful of fixed-size full-sector JPEGs with no
+# lat/lon georeference. GIBS updates every ~10 min. GeoColor (true color)
+# goes dark at night, so Band13 clean infrared (shows cloud-top temperature,
+# works day and night) is used as the night fallback.
+GIBS_TILE_URL_TEMPLATE: Final = (
+    "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
+    "{layer}/default/{time}/{matrix_set}/{z}/{y}/{x}.png"
+)
+GIBS_LAYER_GEOCOLOR: Final = "GOES-East_ABI_GeoColor"
+GIBS_LAYER_INFRARED: Final = "GOES-East_ABI_Band13_Clean_Infrared"
+GIBS_MATRIX_SET_GEOCOLOR: Final = "GoogleMapsCompatible_Level7"
+GIBS_MATRIX_SET_INFRARED: Final = "GoogleMapsCompatible_Level6"
+GIBS_ATTRIBUTION: Final = "Imagery by NASA GIBS / NOAA GOES-East"
+SATELLITE_ZOOM: Final = 5  # capped by GIBS' max level (7 GeoColor / 6 IR)
+SATELLITE_TILE_GRID: Final = 3  # 3x3 tiles (~700km across at zoom 5)
+SATELLITE_TILE_SIZE: Final = 256
+SATELLITE_UPDATE_INTERVAL: Final = 600  # 10 min, matches GIBS' frame cadence
+# How many past 10-min frames the animated GIF camera stitches together.
+SATELLITE_ANIMATION_FRAMES: Final = 6  # last hour
+SATELLITE_ANIMATION_UPDATE_INTERVAL: Final = 1200  # 20 min: N tile fetches, expensive
+
 # Default onboarding locations (Buenos Aires)
 DEFAULT_HOME_LATITUDE: Final = -34.6037
 DEFAULT_HOME_LONGITUDE: Final = -58.3816

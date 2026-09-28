@@ -20,9 +20,17 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, RADAR_UPDATE_INTERVAL, RAINVIEWER_ATTRIBUTION
+from .const import (
+    DOMAIN,
+    GIBS_ATTRIBUTION,
+    RADAR_UPDATE_INTERVAL,
+    RAINVIEWER_ATTRIBUTION,
+    SATELLITE_ANIMATION_UPDATE_INTERVAL,
+    SATELLITE_UPDATE_INTERVAL,
+)
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .radar import build_radar_snapshot_jpeg
+from .satellite import build_satellite_animation_gif, build_satellite_snapshot_jpeg
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +40,7 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the SMN radar camera."""
+    """Set up the SMN radar and satellite cameras."""
     coordinator: ArgentinaSMNDataUpdateCoordinator = hass.data[DOMAIN][
         config_entry.entry_id
     ]
@@ -41,7 +49,13 @@ async def async_setup_entry(
     name = config_entry.data.get(CONF_NAME, "SMN")
 
     async_add_entities(
-        [SMNRadarCamera(coordinator, config_entry, name, latitude, longitude)]
+        [
+            SMNRadarCamera(coordinator, config_entry, name, latitude, longitude),
+            SMNSatelliteCamera(coordinator, config_entry, name, latitude, longitude),
+            SMNSatelliteAnimationCamera(
+                coordinator, config_entry, name, latitude, longitude
+            ),
+        ]
     )
 
 
@@ -165,6 +179,190 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
         it's genuinely the very first call and that hasn't completed yet,
         build it synchronously this once rather than return nothing.
         """
+        if self._cached_image is None and not self._refreshing:
+            await self._async_refresh()
+        return self._cached_image
+
+
+class SMNSatelliteCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
+    """Latest NASA GIBS GOES-East satellite frame, with an estimated cloud-drift arrow.
+
+    Static JPEG for the same attachment-compatibility reason as the radar
+    camera — see SMNRadarCamera's docstring. GeoColor by day, clean
+    infrared by night (see satellite.py's _layer_for).
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "satellite"
+    _attr_attribution = GIBS_ATTRIBUTION
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        name: str,
+        latitude: float,
+        longitude: float,
+    ) -> None:
+        super().__init__(coordinator)
+        Camera.__init__(self)
+        self.content_type = "image/jpeg"
+        self._attr_unique_id = f"{config_entry.entry_id}_satellite"
+        self._attr_name = f"{name} Satélite"
+        self._latitude = latitude
+        self._longitude = longitude
+        self._cached_image: bytes | None = None
+        self._config_entry = config_entry
+        self._refreshing = False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.hass.async_create_task(self._async_refresh())
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass,
+                self._async_scheduled_refresh,
+                timedelta(seconds=SATELLITE_UPDATE_INTERVAL),
+            )
+        )
+
+    async def _async_scheduled_refresh(self, _now=None) -> None:
+        await self._async_refresh()
+
+    async def _async_refresh(self) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            from homeassistant.helpers.sun import is_up
+
+            session = async_get_clientsession(self.hass)
+            image = await build_satellite_snapshot_jpeg(
+                session, self._latitude, self._longitude, is_up(self.hass)
+            )
+            if image:
+                self._cached_image = image
+            elif not self._cached_image:
+                _LOGGER.warning(
+                    "No satellite image available yet for %s,%s (GIBS fetch "
+                    "failed and no cached frame exists)",
+                    self._latitude,
+                    self._longitude,
+                )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Error building satellite image: %s", err, exc_info=True)
+        finally:
+            self._refreshing = False
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        if self._cached_image is None and not self._refreshing:
+            await self._async_refresh()
+        return self._cached_image
+
+
+class SMNSatelliteAnimationCamera(
+    CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera
+):
+    """Animated GIF of the last hour of NASA GIBS satellite frames.
+
+    Deliberately a GIF, unlike the other two cameras here — this one isn't
+    meant to be attached via a notification integration's "camera snapshot"
+    feature (same JPEG-only limitation noted on SMNRadarCamera), but shared
+    as its entity_picture URL (HA signs it automatically), which any chat
+    client fetches and renders as an actual animation.
+
+    Refreshed less often than the still cameras: each build fetches a full
+    tile grid per frame (SATELLITE_ANIMATION_FRAMES times the work of the
+    still satellite camera), so it runs on a longer interval.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "satellite_animation"
+    _attr_attribution = GIBS_ATTRIBUTION
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        name: str,
+        latitude: float,
+        longitude: float,
+    ) -> None:
+        super().__init__(coordinator)
+        Camera.__init__(self)
+        self.content_type = "image/gif"
+        self._attr_unique_id = f"{config_entry.entry_id}_satellite_animation"
+        self._attr_name = f"{name} Satélite (animado)"
+        self._latitude = latitude
+        self._longitude = longitude
+        self._cached_image: bytes | None = None
+        self._config_entry = config_entry
+        self._refreshing = False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.hass.async_create_task(self._async_refresh())
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass,
+                self._async_scheduled_refresh,
+                timedelta(seconds=SATELLITE_ANIMATION_UPDATE_INTERVAL),
+            )
+        )
+
+    async def _async_scheduled_refresh(self, _now=None) -> None:
+        await self._async_refresh()
+
+    async def _async_refresh(self) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            from homeassistant.helpers.sun import is_up
+
+            session = async_get_clientsession(self.hass)
+            image = await build_satellite_animation_gif(
+                session, self._latitude, self._longitude, is_up(self.hass)
+            )
+            if image:
+                self._cached_image = image
+            elif not self._cached_image:
+                _LOGGER.warning(
+                    "No satellite animation available yet for %s,%s (GIBS "
+                    "fetch failed and no cached frames exist)",
+                    self._latitude,
+                    self._longitude,
+                )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error(
+                "Error building satellite animation: %s", err, exc_info=True
+            )
+        finally:
+            self._refreshing = False
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
         if self._cached_image is None and not self._refreshing:
             await self._async_refresh()
         return self._cached_image

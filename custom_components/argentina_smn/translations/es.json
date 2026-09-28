@@ -102,6 +102,12 @@
     "camera": {
       "radar": {
         "name": "Radar"
+      },
+      "satellite": {
+        "name": "Satélite"
+      },
+      "satellite_animation": {
+        "name": "Satélite (animado)"
       }
     },
     "sensor": {
