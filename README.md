@@ -83,6 +83,18 @@ necesario para que se vea "un mapa" y no "nada". Atribución de ambas
 fuentes incluida como `attribution` de la entidad. Solo cubre radar de
 precipitación, no imagen satelital (RainViewer no la ofrece).
 
+**Importante — cobertura de RainViewer en Argentina es limitada.** Se
+verificó que su red de radares tiene huecos notorios en el país: hubo
+tormentas reales sobre Córdoba (confirmadas por Windy, Meteored y el mapa
+del propio SMN) que RainViewer no mostraba en absoluto. Por eso la cámara
+también dibuja, **siempre**, la zona de alerta activa (si hay alguna) como
+un polígono rojo con un ícono de tormenta y el texto del aviso (título +
+hora de validez) — usando el campo `geometry` de `warning/shortterm`, la
+misma data ya validada que usa `sensor.<ubicación>_short_term_summary`. A
+diferencia del radar de RainViewer, esto es 100% confiable para Argentina
+porque sale directo de la API del SMN, no de un agregador de terceros con
+cobertura pareja a nivel mundial pero floja en esta región.
+
 El pronóstico de 7 días ya viene incluido en la entidad `weather` — se ve
 en la pestaña "Pronóstico" de su diálogo de más información, o en
 cualquier tarjeta de clima de Lovelace. No hace falta nada adicional para

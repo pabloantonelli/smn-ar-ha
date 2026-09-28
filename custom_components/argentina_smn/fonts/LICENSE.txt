@@ -1,0 +1,10 @@
+DejaVuSans.ttf — DejaVu Fonts, based on Bitstream Vera Fonts.
+Bundled here so the radar camera's alert caption can render Spanish
+accented characters (á, é, í, ó, ú, ñ) regardless of what fonts are
+available inside the Home Assistant environment (Pillow's own
+ImageFont.load_default() doesn't cover them).
+
+License: free for use, modification and distribution, including in
+commercial products, under the Bitstream Vera / DejaVu license (permits
+embedding without attribution requirements beyond keeping this notice with
+the font files). Full text: https://dejavu-fonts.github.io/License.html

@@ -1,6 +1,9 @@
-"""Camera platform exposing an animated precipitation radar (RainViewer).
+"""Camera platform: precipitation radar (RainViewer) + SMN's own alert zones.
 
-Not sourced from SMN — see radar.py / const.py for why.
+Not sourced from SMN's map servers — see radar.py / const.py for why. The
+alert zone polygons drawn on top ARE from SMN though (the same
+warning/shortterm data already used by sensor.py), which is what makes the
+image useful even when RainViewer's Argentina coverage is thin.
 """
 from __future__ import annotations
 
@@ -14,8 +17,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, RADAR_UPDATE_INTERVAL, RAINVIEWER_ATTRIBUTION
+from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .radar import build_animated_radar_gif
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,15 +32,20 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the SMN radar camera."""
+    coordinator: ArgentinaSMNDataUpdateCoordinator = hass.data[DOMAIN][
+        config_entry.entry_id
+    ]
     latitude = config_entry.data[CONF_LATITUDE]
     longitude = config_entry.data[CONF_LONGITUDE]
     name = config_entry.data.get(CONF_NAME, "SMN")
 
-    async_add_entities([SMNRadarCamera(config_entry, name, latitude, longitude)])
+    async_add_entities(
+        [SMNRadarCamera(coordinator, config_entry, name, latitude, longitude)]
+    )
 
 
-class SMNRadarCamera(Camera):
-    """Animated precipitation radar mosaic around the configured location."""
+class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
+    """Precipitation radar mosaic with SMN's active alert zones outlined."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "radar"
@@ -43,12 +53,14 @@ class SMNRadarCamera(Camera):
 
     def __init__(
         self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
         config_entry: ConfigEntry,
         name: str,
         latitude: float,
         longitude: float,
     ) -> None:
-        super().__init__()
+        super().__init__(coordinator)
+        Camera.__init__(self)
         # Camera.__init__ sets self.content_type = DEFAULT_CONTENT_TYPE
         # (image/jpeg), so this has to be set as an instance attribute
         # after calling super().__init__(), not as a class attribute —
@@ -75,14 +87,17 @@ class SMNRadarCamera(Camera):
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Return the cached animated GIF, rebuilding it if stale."""
+        """Return the cached radar+alerts GIF, rebuilding it if stale."""
         now = time.monotonic()
         if self._cached_gif and (now - self._cached_at) < RADAR_UPDATE_INTERVAL:
             return self._cached_gif
 
         session = async_get_clientsession(self.hass)
+        alerts = self.coordinator.data.shortterm_alerts if self.coordinator.data else []
         try:
-            gif = await build_animated_radar_gif(session, self._latitude, self._longitude)
+            gif = await build_animated_radar_gif(
+                session, self._latitude, self._longitude, alerts=alerts
+            )
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Error building radar GIF: %s", err, exc_info=True)
             gif = None
