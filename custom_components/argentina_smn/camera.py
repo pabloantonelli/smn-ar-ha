@@ -155,6 +155,7 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
                 alerts=alerts,
                 current_weather=current_weather,
                 hourly_forecast=hourly_forecast,
+                province=(current_weather or {}).get("province"),
             )
             if image:
                 self._cached_image = image
@@ -246,8 +247,14 @@ class SMNSatelliteCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], C
             from homeassistant.helpers.sun import is_up
 
             session = async_get_clientsession(self.hass)
+            data = self.coordinator.data
+            current_weather = data.current_weather_data if data else None
             image = await build_satellite_snapshot_jpeg(
-                session, self._latitude, self._longitude, is_up(self.hass)
+                session,
+                self._latitude,
+                self._longitude,
+                is_up(self.hass),
+                province=(current_weather or {}).get("province"),
             )
             if image:
                 self._cached_image = image
@@ -341,8 +348,14 @@ class SMNSatelliteAnimationCamera(
             from homeassistant.helpers.sun import is_up
 
             session = async_get_clientsession(self.hass)
+            data = self.coordinator.data
+            current_weather = data.current_weather_data if data else None
             image = await build_satellite_animation_gif(
-                session, self._latitude, self._longitude, is_up(self.hass)
+                session,
+                self._latitude,
+                self._longitude,
+                is_up(self.hass),
+                province=(current_weather or {}).get("province"),
             )
             if image:
                 self._cached_image = image

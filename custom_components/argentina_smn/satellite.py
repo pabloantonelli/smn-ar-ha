@@ -16,6 +16,7 @@ from typing import Any
 import aiohttp
 import async_timeout
 
+from .boundaries import draw_province_outline, get_outline_rings
 from .const import (
     GIBS_LAYER_GEOCOLOR,
     GIBS_LAYER_INFRARED,
@@ -27,7 +28,7 @@ from .const import (
     SATELLITE_TILE_SIZE,
     SATELLITE_ZOOM,
 )
-from .radar import _deg2tile
+from .radar import _deg2pixel, _deg2tile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -271,12 +272,31 @@ def _draw_motion_arrow(frame: Any, vector: tuple[float, float]) -> None:
         draw.line([(x1, y1), (hx, hy)], fill=(255, 220, 40, 255), width=4)
 
 
+def _draw_outline(frame: Any, province: str | None, center_x: int, center_y: int) -> None:
+    """Draw the configured province's outline (or all of Argentina as a fallback).
+
+    Uses radar.py's _deg2pixel — safe to share since SATELLITE_TILE_SIZE
+    equals RADAR_TILE_SIZE (both 256px), which is what that projection
+    hardcodes internally.
+    """
+    rings = get_outline_rings(province)
+    if not rings:
+        return
+    half = SATELLITE_TILE_GRID // 2
+    origin_x = (center_x - half) * SATELLITE_TILE_SIZE
+    origin_y = (center_y - half) * SATELLITE_TILE_SIZE
+    draw_province_outline(
+        frame, rings, lambda lat, lon: _deg2pixel(lat, lon, SATELLITE_ZOOM), origin_x, origin_y
+    )
+
+
 async def build_satellite_snapshot_jpeg(
     session: aiohttp.ClientSession,
     latitude: float,
     longitude: float,
     is_daytime: bool,
     with_motion_arrow: bool = True,
+    province: str | None = None,
 ) -> bytes | None:
     """Build a single static JPEG: latest GIBS satellite frame for the area.
 
@@ -304,6 +324,8 @@ async def build_satellite_snapshot_jpeg(
         if vector:
             _draw_motion_arrow(frame, vector)
 
+    _draw_outline(frame, province, center_x, center_y)
+
     buffer = io.BytesIO()
     frame.convert("RGB").save(buffer, format="JPEG", quality=85)
     return buffer.getvalue()
@@ -314,6 +336,7 @@ async def build_satellite_animation_gif(
     latitude: float,
     longitude: float,
     is_daytime: bool,
+    province: str | None = None,
 ) -> bytes | None:
     """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES GIBS frames.
 
@@ -336,7 +359,10 @@ async def build_satellite_animation_gif(
     # A frame with any missing tile is dropped rather than shown with black
     # holes in it — see _fetch_mosaic's docstring. Occasionally losing one
     # of SATELLITE_ANIMATION_FRAMES beats a visibly broken animation.
-    frames = [mosaic.convert("RGB") for mosaic, complete in results if complete]
+    kept = [mosaic for mosaic, complete in results if complete]
+    for mosaic in kept:
+        _draw_outline(mosaic, province, center_x, center_y)
+    frames = [mosaic.convert("RGB") for mosaic in kept]
     if not frames:
         return None
 

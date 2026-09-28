@@ -29,6 +29,7 @@ import async_timeout
 
 _FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf")
 
+from .boundaries import draw_province_outline, get_outline_rings
 from .const import (
     BASEMAP_TILE_URL_TEMPLATE,
     BASEMAP_USER_AGENT,
@@ -522,6 +523,7 @@ async def build_radar_snapshot_jpeg(
     alerts: list[dict[str, Any]] | None = None,
     current_weather: dict[str, Any] | None = None,
     hourly_forecast: list[dict[str, Any]] | None = None,
+    province: str | None = None,
 ) -> bytes | None:
     """Build a single static JPEG: basemap + latest radar frame + overlays.
 
@@ -555,6 +557,15 @@ async def build_radar_snapshot_jpeg(
     if host and frame_paths:
         layer = await _fetch_radar_layer(session, host, frame_paths[-1], center_x, center_y)
         frame.alpha_composite(layer)
+
+    rings = get_outline_rings(province)
+    if rings:
+        half = RADAR_TILE_GRID // 2
+        origin_x = (center_x - half) * RADAR_TILE_SIZE
+        origin_y = (center_y - half) * RADAR_TILE_SIZE
+        draw_province_outline(
+            frame, rings, lambda lat, lon: _deg2pixel(lat, lon, RADAR_ZOOM), origin_x, origin_y
+        )
 
     visible_alerts = filter_alerts_in_view(alerts, center_x, center_y) if alerts else []
     if visible_alerts:
