@@ -104,6 +104,9 @@
     "sensor": {
       "short_term_summary": {
         "name": "Pronóstico de corto plazo"
+      },
+      "nationwide_avisos": {
+        "name": "Avisos por provincia (país)"
       }
     }
   }

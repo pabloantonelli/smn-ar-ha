@@ -21,6 +21,7 @@ from .const import (
     API_FORECAST_PATH,
     API_HEAT_WARNING_PATH,
     API_SHORTTERM_ALERT_PATH,
+    API_SHORTTERM_NATIONWIDE_PATH,
     API_SUN_PATH,
     API_WEATHER_PATH,
     CONF_LOCATION_ID,
@@ -63,6 +64,7 @@ class ArgentinaSMNData:
         self.hourly_forecast: list[dict[str, Any]] = []
         self.alerts: dict[str, Any] = {}
         self.shortterm_alerts: list[dict[str, Any]] = []
+        self.nationwide_shortterm_alerts: list[dict[str, Any]] = []
         self.heat_warnings: dict[str, Any] = {}
         self.cold_warnings: dict[str, Any] = {}
         self.sun: dict[str, Any] = {}
@@ -129,6 +131,7 @@ class ArgentinaSMNData:
         await self._fetch_sun(location_id)
         await self._fetch_alerts(location_id)
         await self._fetch_shortterm_alerts(location_id)
+        await self._fetch_nationwide_shortterm_alerts()
 
     async def _fetch_current_weather(self, location_id: str) -> None:
         """Fetch current weather data."""
@@ -257,6 +260,17 @@ class ArgentinaSMNData:
             return
 
         self.shortterm_alerts = data if isinstance(data, list) else []
+
+    async def _fetch_nationwide_shortterm_alerts(self) -> None:
+        """Fetch avisos a muy corto plazo for the whole country (no location filter)."""
+        try:
+            data = await self._get_json(API_SHORTTERM_NATIONWIDE_PATH)
+        except aiohttp.ClientError as err:
+            _LOGGER.debug("Error fetching nationwide short-term alerts: %s", err)
+            self.nationwide_shortterm_alerts = []
+            return
+
+        self.nationwide_shortterm_alerts = data if isinstance(data, list) else []
 
     async def _fetch_heat_warnings(self, area_id: str) -> None:
         """Fetch heat wave warnings for the area."""

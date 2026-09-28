@@ -138,16 +138,59 @@ def build_summary(
     return "Sin alertas vigentes", attrs
 
 
+def build_nationwide_summary(
+    nationwide_alerts: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    """Build (short state text, extra attributes) for the nationwide avisos.
+
+    Groups the current avisos a muy corto plazo (no location filter) by
+    province — the same view as smn.gob.ar's "Resumen por provincia".
+    """
+    if not nationwide_alerts:
+        return "Sin avisos vigentes en el país", {"por_provincia": {}}
+
+    by_province: dict[str, list[dict[str, Any]]] = {}
+    for alert in nationwide_alerts:
+        provinces = alert.get("provinces") or []
+        province_names = [p.get("name") for p in provinces if p.get("name")]
+        if not province_names:
+            # Fall back to parsing "PROVINCIA: departamentos..." from zones.
+            province_names = [
+                z.split(":", 1)[0].strip().title() for z in (alert.get("zones") or [])
+            ]
+
+        entry = {
+            "titulo": alert.get("title"),
+            "vigente_hasta": alert.get("end_date"),
+            "zonas": alert.get("zones"),
+        }
+        for name in province_names or ["(sin provincia)"]:
+            by_province.setdefault(name, []).append(entry)
+
+    province_list = sorted(by_province.keys())
+    state = f"{len(nationwide_alerts)} avisos vigentes en {', '.join(province_list)}"
+
+    return state[:MAX_STATE_LENGTH], {
+        "total_avisos": len(nationwide_alerts),
+        "por_provincia": by_province,
+    }
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the SMN short-term summary sensor."""
+    """Set up the SMN summary sensors."""
     coordinator: ArgentinaSMNDataUpdateCoordinator = hass.data[DOMAIN][
         config_entry.entry_id
     ]
-    async_add_entities([SMNShortTermSummarySensor(coordinator, config_entry)])
+    async_add_entities(
+        [
+            SMNShortTermSummarySensor(coordinator, config_entry),
+            SMNNationwideAvisosSensor(coordinator, config_entry),
+        ]
+    )
 
 
 class SMNShortTermSummarySensor(
@@ -199,4 +242,47 @@ class SMNShortTermSummarySensor(
             data.cold_warnings,
             data.daily_forecast,
         )
+        return attrs
+
+
+class SMNNationwideAvisosSensor(
+    CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], SensorEntity
+):
+    """Avisos a muy corto plazo for the whole country, grouped by province.
+
+    Same view as smn.gob.ar's "Resumen por provincia" — not filtered to
+    the configured location, so it's shared/identical across every SMN
+    config entry in this Home Assistant instance.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "nationwide_avisos"
+    _attr_icon = "mdi:map-marker-alert-outline"
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{config_entry.entry_id}_nationwide_avisos"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    @property
+    def native_value(self) -> str:
+        state, _ = build_nationwide_summary(self.coordinator.data.nationwide_shortterm_alerts)
+        return state
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        _, attrs = build_nationwide_summary(self.coordinator.data.nationwide_shortterm_alerts)
         return attrs

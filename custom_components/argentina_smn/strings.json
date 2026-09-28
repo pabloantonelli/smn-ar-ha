@@ -104,6 +104,9 @@
     "sensor": {
       "short_term_summary": {
         "name": "Short-term forecast"
+      },
+      "nationwide_avisos": {
+        "name": "Nationwide avisos by province"
       }
     }
   }

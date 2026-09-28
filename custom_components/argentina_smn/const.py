@@ -42,6 +42,10 @@ API_FORECAST_PATH: Final = f"{API_PATH_PREFIX}/forecast/location"
 API_WEATHER_PATH: Final = f"{API_PATH_PREFIX}/weather/location"
 API_ALERT_PATH: Final = f"{API_PATH_PREFIX}/warning/alert/location"
 API_SHORTTERM_ALERT_PATH: Final = f"{API_PATH_PREFIX}/warning/shortterm/location"
+# Nationwide avisos a muy corto plazo (no location filter) — same data as
+# smn.gob.ar's "Resumen por provincia", each aviso already includes a
+# structured "provinces" field to group by.
+API_SHORTTERM_NATIONWIDE_PATH: Final = f"{API_PATH_PREFIX}/warning/shortterm/"
 API_HEAT_WARNING_PATH: Final = f"{API_PATH_PREFIX}/warning/heat/area"
 API_COLD_WARNING_PATH: Final = f"{API_PATH_PREFIX}/warning/cold/area"
 API_SUN_PATH: Final = f"{API_PATH_PREFIX}/sun/location"
