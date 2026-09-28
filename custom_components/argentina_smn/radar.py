@@ -8,6 +8,7 @@ proxy renders a still image today).
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import math
@@ -276,12 +277,12 @@ async def _fetch_tile(
     from PIL import Image
 
     try:
-        async with async_timeout.timeout(10):
+        async with async_timeout.timeout(6):
             resp = await session.get(url, headers=headers)
             resp.raise_for_status()
             tile_bytes = await resp.read()
         return Image.open(io.BytesIO(tile_bytes)).convert("RGBA")
-    except (aiohttp.ClientError, OSError) as err:
+    except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as err:
         _LOGGER.debug("Error fetching tile %s: %s", url, err)
         return Image.new("RGBA", (RADAR_TILE_SIZE, RADAR_TILE_SIZE), (0, 0, 0, 0))
 
@@ -289,7 +290,13 @@ async def _fetch_tile(
 async def _fetch_basemap_mosaic(
     session: aiohttp.ClientSession, center_x: int, center_y: int
 ):
-    """Fetch and stitch the basemap tile grid (fetched once, reused per frame)."""
+    """Fetch and stitch the basemap tile grid (fetched once, reused per frame).
+
+    All tiles are fetched concurrently — with a 5x5 grid that's 25 requests,
+    which sequentially (the original implementation) could take well past
+    typical notification/snapshot timeouts. In parallel it's bounded by the
+    single slowest tile instead of the sum of all of them.
+    """
     from PIL import Image
 
     half = RADAR_TILE_GRID // 2
@@ -298,16 +305,19 @@ async def _fetch_basemap_mosaic(
         (RADAR_TILE_SIZE * RADAR_TILE_GRID, RADAR_TILE_SIZE * RADAR_TILE_GRID),
     )
 
-    for dx in range(-half, half + 1):
-        for dy in range(-half, half + 1):
-            x, y = center_x + dx, center_y + dy
-            url = BASEMAP_TILE_URL_TEMPLATE.format(z=RADAR_ZOOM, x=x, y=y)
-            tile_img = await _fetch_tile(
-                session, url, headers={"User-Agent": BASEMAP_USER_AGENT}
-            )
-            mosaic.paste(
-                tile_img, ((dx + half) * RADAR_TILE_SIZE, (dy + half) * RADAR_TILE_SIZE)
-            )
+    positions = [(dx, dy) for dx in range(-half, half + 1) for dy in range(-half, half + 1)]
+    urls = [
+        BASEMAP_TILE_URL_TEMPLATE.format(z=RADAR_ZOOM, x=center_x + dx, y=center_y + dy)
+        for dx, dy in positions
+    ]
+    tiles = await asyncio.gather(
+        *(_fetch_tile(session, url, headers={"User-Agent": BASEMAP_USER_AGENT}) for url in urls)
+    )
+
+    for (dx, dy), tile_img in zip(positions, tiles):
+        mosaic.paste(
+            tile_img, ((dx + half) * RADAR_TILE_SIZE, (dy + half) * RADAR_TILE_SIZE)
+        )
 
     return mosaic
 
@@ -339,17 +349,17 @@ async def _fetch_radar_layer(
     if RAINVIEWER_MAX_ZOOM >= RADAR_ZOOM:
         # No scaling needed, fetch directly at RADAR_ZOOM.
         layer = Image.new("RGBA", (target_size, target_size))
-        for dx in range(-half, half + 1):
-            for dy in range(-half, half + 1):
-                x, y = center_x + dx, center_y + dy
-                url = (
-                    f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RADAR_ZOOM}/{x}/{y}/"
-                    f"{RADAR_COLOR_SCHEME}/1_1.png"
-                )
-                tile_img = await _fetch_tile(session, url)
-                layer.paste(
-                    tile_img, ((dx + half) * RADAR_TILE_SIZE, (dy + half) * RADAR_TILE_SIZE)
-                )
+        positions = [(dx, dy) for dx in range(-half, half + 1) for dy in range(-half, half + 1)]
+        urls = [
+            f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RADAR_ZOOM}/{center_x + dx}/{center_y + dy}/"
+            f"{RADAR_COLOR_SCHEME}/1_1.png"
+            for dx, dy in positions
+        ]
+        tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
+        for (dx, dy), tile_img in zip(positions, tiles):
+            layer.paste(
+                tile_img, ((dx + half) * RADAR_TILE_SIZE, (dy + half) * RADAR_TILE_SIZE)
+            )
         return layer
 
     scale = 2.0 ** (RAINVIEWER_MAX_ZOOM - RADAR_ZOOM)
@@ -369,17 +379,22 @@ async def _fetch_radar_layer(
             (tile_y_end - tile_y_start + 1) * RADAR_TILE_SIZE,
         ),
     )
-    for x in range(tile_x_start, tile_x_end + 1):
-        for y in range(tile_y_start, tile_y_end + 1):
-            url = (
-                f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RAINVIEWER_MAX_ZOOM}/{x}/{y}/"
-                f"{RADAR_COLOR_SCHEME}/1_1.png"
-            )
-            tile_img = await _fetch_tile(session, url)
-            raw.paste(
-                tile_img,
-                ((x - tile_x_start) * RADAR_TILE_SIZE, (y - tile_y_start) * RADAR_TILE_SIZE),
-            )
+    tile_positions = [
+        (x, y)
+        for x in range(tile_x_start, tile_x_end + 1)
+        for y in range(tile_y_start, tile_y_end + 1)
+    ]
+    urls = [
+        f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RAINVIEWER_MAX_ZOOM}/{x}/{y}/"
+        f"{RADAR_COLOR_SCHEME}/1_1.png"
+        for x, y in tile_positions
+    ]
+    tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
+    for (x, y), tile_img in zip(tile_positions, tiles):
+        raw.paste(
+            tile_img,
+            ((x - tile_x_start) * RADAR_TILE_SIZE, (y - tile_y_start) * RADAR_TILE_SIZE),
+        )
 
     crop_left = round(origin_x_r - tile_x_start * RADAR_TILE_SIZE)
     crop_top = round(origin_y_r - tile_y_start * RADAR_TILE_SIZE)
@@ -387,21 +402,6 @@ async def _fetch_radar_layer(
         (crop_left, crop_top, crop_left + round(size_r), crop_top + round(size_r))
     )
     return cropped.resize((target_size, target_size), Image.NEAREST)
-
-
-async def _fetch_radar_mosaic(
-    session: aiohttp.ClientSession,
-    host: str,
-    frame_path: str,
-    center_x: int,
-    center_y: int,
-    basemap: Any,
-):
-    """Fetch the radar layer for a single frame, composited over the basemap."""
-    frame = basemap.copy()
-    layer = await _fetch_radar_layer(session, host, frame_path, center_x, center_y)
-    frame.alpha_composite(layer)
-    return frame
 
 
 async def build_animated_radar_gif(
@@ -433,10 +433,19 @@ async def build_animated_radar_gif(
 
     frames = []
     if host and frame_paths:
-        for frame_path in frame_paths:
-            frame = await _fetch_radar_mosaic(
-                session, host, frame_path, center_x, center_y, basemap
+        # All frames' tiles fetched concurrently too, not one frame at a
+        # time — otherwise total time is (tiles-per-frame × frame_count)
+        # sequential round-trips, easily blowing past a notification
+        # service's snapshot timeout.
+        layers = await asyncio.gather(
+            *(
+                _fetch_radar_layer(session, host, frame_path, center_x, center_y)
+                for frame_path in frame_paths
             )
+        )
+        for layer in layers:
+            frame = basemap.copy()
+            frame.alpha_composite(layer)
             frames.append(frame)
     else:
         # No radar frames (RainViewer unavailable) — still show the basemap

@@ -175,6 +175,15 @@ en `const.py`), cubriendo aproximadamente 300km alrededor de tu ubicación
 — suficiente para ver tu ciudad y alrededores con detalle, más avisos en
 zonas vecinas. Si querés más o menos zoom, se ajusta ahí.
 
+**Rendimiento**: armar la imagen implica ~25 tiles de mapa + los de radar
+de cada uno de los 6 frames — se piden todos en paralelo (no uno por uno),
+y el resultado se recalcula **en segundo plano cada 10 minutos**, no recién
+cuando alguien pide la imagen. Esto importa si pensás usar esta cámara
+para adjuntarla a una notificación (`camera_entity` en un servicio
+`notify`, o `camera.snapshot`): como ya está construida de antes, la
+respuesta es prácticamente instantánea en vez de tardar varios segundos y
+arriesgarse a un timeout del servicio de notificación.
+
 El pronóstico de 7 días ya viene incluido en la entidad `weather` — se ve
 en la pestaña "Pronóstico" de su diálogo de más información, o en
 cualquier tarjeta de clima de Lovelace. No hace falta nada adicional para
