@@ -108,6 +108,12 @@
       },
       "satellite_animation": {
         "name": "Satellite (animated)"
+      },
+      "satellite_country": {
+        "name": "Satellite (Argentina)"
+      },
+      "satellite_province": {
+        "name": "Satellite (province)"
       }
     },
     "sensor": {

@@ -72,19 +72,16 @@ def get_province_rings(province_name: str) -> list[list[tuple[float, float]]] | 
     return _load_provinces().get(_normalize(province_name))
 
 
-def get_outline_rings(province_name: str | None) -> list[list[tuple[float, float]]]:
-    """Return the best available outline: the named province, else all of Argentina.
-
-    Used as a location-context layer on the radar/satellite mosaics, which
-    don't otherwise show political borders — falls back to the national
-    outline when the province is unknown/unmatched (e.g. SMN's spelling
-    doesn't line up with geoBoundaries', or the location is configured
-    without a resolved province), so there's always some reference outline.
-    """
-    rings = get_province_rings(province_name) if province_name else None
-    if rings:
-        return rings
+def get_country_rings() -> list[list[tuple[float, float]]]:
+    """Return Argentina's national outline."""
     return _load_provinces().get("argentina", [])
+
+
+def get_bbox(rings: list[list[tuple[float, float]]]) -> tuple[float, float, float, float]:
+    """Return (min_lat, min_lon, max_lat, max_lon) covering all of `rings`."""
+    lats = [lat for ring in rings for _, lat in ring]
+    lons = [lon for ring in rings for lon, _ in ring]
+    return min(lats), min(lons), max(lats), max(lons)
 
 
 def draw_province_outline(
@@ -93,6 +90,8 @@ def draw_province_outline(
     deg2pixel: Any,
     origin_x: float,
     origin_y: float,
+    color: tuple[int, int, int, int] = (235, 235, 235, 210),
+    width: int = 1,
 ) -> None:
     """Draw a province's outline on `frame`, given a lon/lat -> world-pixel function.
 
@@ -100,6 +99,9 @@ def draw_province_outline(
     same projection radar.py/satellite.py already use for their mosaics
     (Web Mercator world pixels minus the mosaic's own top-left corner), so
     this overlay lines up with whatever imagery is already on `frame`.
+
+    Default color is a light, thin line — meant to read as a subtle map
+    reference, not compete visually with cloud/alert overlays.
     """
     from PIL import ImageDraw
 
@@ -110,4 +112,4 @@ def draw_province_outline(
             px, py = deg2pixel(lat, lon)
             points.append((px - origin_x, py - origin_y))
         if len(points) >= 2:
-            draw.line(points + [points[0]], fill=(255, 255, 0, 220), width=3)
+            draw.line(points + [points[0]], fill=color, width=width)

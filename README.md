@@ -63,6 +63,10 @@ dispositivo o una palabra del nombre visible (ej. "corto plazo").
 | `sensor` | Pronóstico de corto plazo | Resumen en una frase de la situación de corto plazo | 10 min |
 | `sensor` | Avisos por provincia (país) | Avisos activos en todo el país, agrupados por provincia | 10 min |
 | `camera` | Radar | Foto con radar de precipitación + zona de alerta + clima actual y próximas horas | 10 min |
+| `camera` | Satélite | Foto satelital (GOES-East) alrededor de tu ubicación, con flecha de deriva de nubes | 10 min |
+| `camera` | Satélite (animado) | GIF de la última hora de imágenes satelitales — pensado para compartir como **URL**, no como adjunto | 20 min |
+| `camera` | Satélite Argentina | Foto satelital de todo el país, con su contorno dibujado | 15 min |
+| `camera` | Satélite provincia | Foto satelital de tu provincia (según la resuelve SMN), con su contorno dibujado | 15 min |
 
 ### `weather`: clima actual y pronóstico
 
@@ -217,6 +221,108 @@ tenerlo: es el mismo pronóstico diario que muestra `smn.gob.ar`, la API no
 ofrece un pronóstico "extendido" separado (se probaron varios endpoints
 candidatos — `forecast/week`, `tendency`, etc. — ninguno existe; 7 días es
 el máximo que da el SMN).
+
+### `camera` "Satélite" / "Satélite (animado)" / "Satélite Argentina" / "Satélite provincia"
+
+Cuatro cámaras, todas con imágenes reales del satélite geoestacionario
+**GOES-East** (el mismo que usa `mapa.smn.gob.ar`), servidas por
+[**NASA GIBS**](https://www.earthdata.nasa.gov/gibs) — un servicio WMTS/XYZ
+público y oficial (sin API key), a diferencia del CDN de NOAA STAR
+(`cdn.star.nesdis.noaa.gov`), que solo publica un puñado de imágenes de
+tamaño fijo sin georreferenciar, sin posibilidad real de zoom. GIBS
+actualiza cada ~10 min. De día usa la capa GeoColor (color real); de noche
+cae automáticamente a la capa de infrarrojo limpio (Banda 13), porque
+GeoColor de noche es directamente una imagen negra.
+
+- **Satélite**: foto estática, zoom fijo alrededor de tu ubicación (misma
+  escala que la cámara de Radar, ~700km). Si hay una señal de movimiento de
+  nubes confiable entre el frame actual y el anterior (correlación de fases
+  entre las dos imágenes), dibuja una flecha amarilla indicando hacia dónde
+  se están desplazando — es una aproximación visual del desplazamiento de
+  la textura en la imagen, **no un dato de viento real**; con nubosidad muy
+  uniforme/difusa (un día totalmente cubierto, por ejemplo) no encuentra
+  señal confiable y no dibuja nada, a propósito, antes que inventar una
+  dirección.
+- **Satélite (animado)**: GIF con los últimos 6 frames (última hora).
+  Actualiza cada 20 min (arma 6 mosaicos de tiles por vez, más caro que la
+  foto estática). **Deliberadamente no pensada para adjuntarse** como foto
+  de una notificación — varias integraciones de notificación asumen que una
+  `camera` es JPEG y manejan mal un adjunto GIF (mismo motivo por el que la
+  cámara de Radar dejó de ser animada, ver arriba). En cambio, se comparte
+  como **URL** (ver la sección siguiente).
+- **Satélite Argentina** / **Satélite provincia**: a diferencia de las dos
+  anteriores (zoom fijo), estas calculan el zoom necesario para que entre
+  **todo** el país o **toda** tu provincia en el cuadro, a partir del
+  contorno real de cada una (ver más abajo). "Satélite provincia" usa la
+  provincia que el propio SMN resuelve para tu ubicación configurada — si
+  todavía no se resolvió o no matchea el dataset de contornos, la entidad
+  simplemente no tiene imagen aún (no cae al mapa de todo el país, para no
+  confundir bajo el nombre "provincia").
+
+**Contorno dibujado (borde fino, blanco/gris claro)**: las cuatro cámaras
+satelitales, y también la de Radar, dibujan un contorno de referencia
+geográfica:
+
+- **Radar** y **Satélite** (zoom fijo, sin control de zoom): siempre
+  dibujan el contorno de **toda Argentina**, nunca el de una provincia —
+  a esa escala fija (~700km) una provincia normalmente no entra completa
+  en el cuadro o queda irreconocible, así que el país entero es la
+  referencia que mejor funciona ahí.
+- **Satélite Argentina**: contorno de Argentina, con el zoom ajustado para
+  que el país entero entre en el cuadro.
+- **Satélite provincia**: contorno de tu provincia, con el zoom ajustado
+  para que la provincia entera entre en el cuadro — esta es la única de
+  las cinco donde tiene sentido dibujar un límite provincial, porque es la
+  única que efectivamente "hace zoom" a la escala de una provincia.
+
+Los contornos vienen del dataset abierto ADM1/ADM0 de
+[**geoBoundaries.org**](https://www.geoboundaries.org) (CC BY 4.0, fuente
+IGN/Wikimedia), empaquetado localmente en
+`custom_components/argentina_smn/data/ar_provincias.geojson` (~107KB) — no
+se consulta en vivo porque los límites provinciales no cambian.
+
+#### Cómo obtener la URL del GIF animado para compartirlo
+
+La cámara "Satélite (animado)" (y, en general, cualquier `camera` de Home
+Assistant) expone su imagen actual en el atributo `entity_picture`, que ya
+viene como una URL firmada por HA (el mismo mecanismo que usan las
+tarjetas de cámara del dashboard — no hace falta login para acceder a
+ella).
+
+1. **Encontrar el `entity_id` exacto**: Ajustes → Herramientas de
+   desarrollo → Estados, buscar "Satélite (animado)" (ver la nota sobre
+   `entity_id` más arriba en este README si no aparece con ese nombre
+   exacto).
+2. **Ver la URL**: en esa misma pantalla, mirar el atributo
+   `entity_picture` del estado — algo como
+   `/api/camera_proxy/camera.<tu_nombre>_satelite_animado?token=xxxxxxxx`.
+   Ese token es temporal y HA lo renueva solo; no hace falta (ni conviene)
+   guardarlo como fijo en ningún lado.
+3. **Convertirla en una URL completa y accesible desde afuera de tu red**:
+   anteponer tu URL externa de Home Assistant (Ajustes → Sistema →
+   General → "URL externa de Home Assistant", o tu dominio de Nabu Casa si
+   la usás):
+   ```
+   https://tu-dominio-externo.com/api/camera_proxy/camera.<tu_nombre>_satelite_animado?token=xxxxxxxx
+   ```
+   Si HA no tiene una URL externa configurada (sin Nabu Casa, reverse
+   proxy o port-forward), esa URL solo funciona dentro de tu red local —
+   eso depende de tu configuración de HA, no de esta integración.
+
+**Para automatizar el envío** (ej. mandarla por Telegram/WhatsApp cada
+tanto), en una plantilla Jinja de una automatización:
+
+```yaml
+{{ state_attr('camera.<tu_nombre>_satelite_animado', 'entity_picture') }}
+```
+
+Esto da el *path* relativo (`/api/camera_proxy/...?token=...`); si el
+servicio al que se la mandás necesita la URL absoluta, hay que
+concatenarle el dominio externo a mano en la plantilla, ej.:
+
+```yaml
+{{ 'https://tu-dominio-externo.com' ~ state_attr('camera.<tu_nombre>_satelite_animado', 'entity_picture') }}
+```
 
 ## Idioma: por qué a veces aparece en inglés
 

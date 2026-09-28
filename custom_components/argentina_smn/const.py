@@ -130,6 +130,17 @@ SATELLITE_UPDATE_INTERVAL: Final = 600  # 10 min, matches GIBS' frame cadence
 SATELLITE_ANIMATION_FRAMES: Final = 6  # last hour
 SATELLITE_ANIMATION_UPDATE_INTERVAL: Final = 1200  # 20 min: N tile fetches, expensive
 
+# GIBS' max zoom level per layer — same numbers as GIBS_MATRIX_SET_*, kept
+# separately as plain ints since the region cameras need to search zoom
+# levels numerically to fit a province/country bounding box.
+GIBS_MAX_ZOOM_GEOCOLOR: Final = 7
+GIBS_MAX_ZOOM_INFRARED: Final = 6
+# Wide-area cameras (whole province / whole country): zoom is computed per
+# request to fit the area's bounding box, so these only cap the tile grid
+# size (cost) and how much of the grid the area is allowed to fill.
+SATELLITE_REGION_TILE_GRID: Final = 6
+SATELLITE_REGION_UPDATE_INTERVAL: Final = 900  # 15 min
+
 # Default onboarding locations (Buenos Aires)
 DEFAULT_HOME_LATITUDE: Final = -34.6037
 DEFAULT_HOME_LONGITUDE: Final = -58.3816

@@ -16,14 +16,17 @@ from typing import Any
 import aiohttp
 import async_timeout
 
-from .boundaries import draw_province_outline, get_outline_rings
+from .boundaries import draw_province_outline, get_bbox, get_country_rings, get_province_rings
 from .const import (
     GIBS_LAYER_GEOCOLOR,
     GIBS_LAYER_INFRARED,
     GIBS_MATRIX_SET_GEOCOLOR,
     GIBS_MATRIX_SET_INFRARED,
+    GIBS_MAX_ZOOM_GEOCOLOR,
+    GIBS_MAX_ZOOM_INFRARED,
     GIBS_TILE_URL_TEMPLATE,
     SATELLITE_ANIMATION_FRAMES,
+    SATELLITE_REGION_TILE_GRID,
     SATELLITE_TILE_GRID,
     SATELLITE_TILE_SIZE,
     SATELLITE_ZOOM,
@@ -51,6 +54,28 @@ def _layer_for(is_daytime: bool) -> tuple[str, str]:
     if is_daytime:
         return GIBS_LAYER_GEOCOLOR, GIBS_MATRIX_SET_GEOCOLOR
     return GIBS_LAYER_INFRARED, GIBS_MATRIX_SET_INFRARED
+
+
+def _max_zoom_for(is_daytime: bool) -> int:
+    return GIBS_MAX_ZOOM_GEOCOLOR if is_daytime else GIBS_MAX_ZOOM_INFRARED
+
+
+def _zoom_for_bbox(
+    min_lat: float, min_lon: float, max_lat: float, max_lon: float, tile_grid: int, max_zoom: int
+) -> int:
+    """Find the highest zoom level at which the bbox still fits the tile grid.
+
+    Searches from max_zoom down to 0 and picks the first level where the
+    bbox's projected pixel span fits within `tile_grid` tiles (with a 10%
+    margin so the outline isn't flush against the image edge).
+    """
+    budget = tile_grid * SATELLITE_TILE_SIZE * 0.9
+    for zoom in range(max_zoom, -1, -1):
+        x0, y0 = _deg2pixel(max_lat, min_lon, zoom)
+        x1, y1 = _deg2pixel(min_lat, max_lon, zoom)
+        if abs(x1 - x0) <= budget and abs(y1 - y0) <= budget:
+            return zoom
+    return 0
 
 
 async def _resolve_latest_frame_time(
@@ -272,14 +297,21 @@ def _draw_motion_arrow(frame: Any, vector: tuple[float, float]) -> None:
         draw.line([(x1, y1), (hx, hy)], fill=(255, 220, 40, 255), width=4)
 
 
-def _draw_outline(frame: Any, province: str | None, center_x: int, center_y: int) -> None:
-    """Draw the configured province's outline (or all of Argentina as a fallback).
+def _draw_outline(frame: Any, center_x: int, center_y: int) -> None:
+    """Draw Argentina's national outline as a light location-context reference.
+
+    Always the country outline, not the configured province's: this camera
+    is zoomed in tight around one lat/lon with no zoom control, so a
+    province boundary would usually run off-frame or be unrecognizable at
+    this scale — see radar.py's build_radar_snapshot_jpeg for the same
+    reasoning. A province that's fully visible at its own natural zoom
+    belongs on build_region_snapshot_jpeg instead.
 
     Uses radar.py's _deg2pixel — safe to share since SATELLITE_TILE_SIZE
     equals RADAR_TILE_SIZE (both 256px), which is what that projection
     hardcodes internally.
     """
-    rings = get_outline_rings(province)
+    rings = get_country_rings()
     if not rings:
         return
     half = SATELLITE_TILE_GRID // 2
@@ -296,7 +328,6 @@ async def build_satellite_snapshot_jpeg(
     longitude: float,
     is_daytime: bool,
     with_motion_arrow: bool = True,
-    province: str | None = None,
 ) -> bytes | None:
     """Build a single static JPEG: latest GIBS satellite frame for the area.
 
@@ -324,7 +355,7 @@ async def build_satellite_snapshot_jpeg(
         if vector:
             _draw_motion_arrow(frame, vector)
 
-    _draw_outline(frame, province, center_x, center_y)
+    _draw_outline(frame, center_x, center_y)
 
     buffer = io.BytesIO()
     frame.convert("RGB").save(buffer, format="JPEG", quality=85)
@@ -336,7 +367,6 @@ async def build_satellite_animation_gif(
     latitude: float,
     longitude: float,
     is_daytime: bool,
-    province: str | None = None,
 ) -> bytes | None:
     """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES GIBS frames.
 
@@ -361,7 +391,7 @@ async def build_satellite_animation_gif(
     # of SATELLITE_ANIMATION_FRAMES beats a visibly broken animation.
     kept = [mosaic for mosaic, complete in results if complete]
     for mosaic in kept:
-        _draw_outline(mosaic, province, center_x, center_y)
+        _draw_outline(mosaic, center_x, center_y)
     frames = [mosaic.convert("RGB") for mosaic in kept]
     if not frames:
         return None
@@ -375,4 +405,75 @@ async def build_satellite_animation_gif(
         duration=400,
         loop=0,
     )
+    return buffer.getvalue()
+
+
+async def build_region_snapshot_jpeg(
+    session: aiohttp.ClientSession,
+    rings: list[list[tuple[float, float]]],
+    is_daytime: bool,
+) -> bytes | None:
+    """Build a static JPEG covering a whole area (a province, or all of Argentina).
+
+    Unlike build_satellite_snapshot_jpeg (fixed zoom around one lat/lon),
+    the zoom level here is computed from `rings`' own bounding box so the
+    whole area fits the frame — this is what lets a dedicated "Córdoba" or
+    "Argentina" camera actually show the full province/country, which
+    isn't possible at the local camera's fixed street-level-ish zoom.
+    Its own outline is drawn on top, thin and light (see
+    boundaries.draw_province_outline's defaults).
+    """
+    if not rings:
+        return None
+    layer, matrix_set = _layer_for(is_daytime)
+    max_zoom = _max_zoom_for(is_daytime)
+    min_lat, min_lon, max_lat, max_lon = get_bbox(rings)
+    zoom = _zoom_for_bbox(min_lat, min_lon, max_lat, max_lon, SATELLITE_REGION_TILE_GRID, max_zoom)
+
+    center_lat = (min_lat + max_lat) / 2
+    center_lon = (min_lon + max_lon) / 2
+    center_x, center_y = _deg2tile(center_lat, center_lon, zoom)
+
+    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
+    if latest_time is None:
+        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
+        return None
+
+    half = SATELLITE_REGION_TILE_GRID // 2
+    from PIL import Image as PILImage
+
+    mosaic = PILImage.new(
+        "RGBA",
+        (
+            SATELLITE_TILE_SIZE * SATELLITE_REGION_TILE_GRID,
+            SATELLITE_TILE_SIZE * SATELLITE_REGION_TILE_GRID,
+        ),
+    )
+    time_str = latest_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    positions = [(dx, dy) for dx in range(-half, half + 1) for dy in range(-half, half + 1)]
+    urls = [
+        GIBS_TILE_URL_TEMPLATE.format(
+            layer=layer,
+            time=time_str,
+            matrix_set=matrix_set,
+            z=zoom,
+            x=center_x + dx,
+            y=center_y + dy,
+        )
+        for dx, dy in positions
+    ]
+    tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
+    for (dx, dy), tile_img in zip(positions, tiles):
+        if tile_img is None:
+            tile_img = PILImage.new("RGBA", (SATELLITE_TILE_SIZE, SATELLITE_TILE_SIZE), (0, 0, 0, 0))
+        mosaic.paste(tile_img, ((dx + half) * SATELLITE_TILE_SIZE, (dy + half) * SATELLITE_TILE_SIZE))
+
+    origin_x = (center_x - half) * SATELLITE_TILE_SIZE
+    origin_y = (center_y - half) * SATELLITE_TILE_SIZE
+    draw_province_outline(
+        mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
+    )
+
+    buffer = io.BytesIO()
+    mosaic.convert("RGB").save(buffer, format="JPEG", quality=85)
     return buffer.getvalue()

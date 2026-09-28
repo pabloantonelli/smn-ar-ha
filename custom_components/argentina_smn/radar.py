@@ -29,7 +29,7 @@ import async_timeout
 
 _FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf")
 
-from .boundaries import draw_province_outline, get_outline_rings
+from .boundaries import draw_province_outline, get_country_rings
 from .const import (
     BASEMAP_TILE_URL_TEMPLATE,
     BASEMAP_USER_AGENT,
@@ -523,7 +523,6 @@ async def build_radar_snapshot_jpeg(
     alerts: list[dict[str, Any]] | None = None,
     current_weather: dict[str, Any] | None = None,
     hourly_forecast: list[dict[str, Any]] | None = None,
-    province: str | None = None,
 ) -> bytes | None:
     """Build a single static JPEG: basemap + latest radar frame + overlays.
 
@@ -558,7 +557,14 @@ async def build_radar_snapshot_jpeg(
         layer = await _fetch_radar_layer(session, host, frame_paths[-1], center_x, center_y)
         frame.alpha_composite(layer)
 
-    rings = get_outline_rings(province)
+    # Always the national outline here, not the province's: this camera is
+    # zoomed in tight around one lat/lon (a fixed ~area, no zoom control),
+    # so a province boundary would usually run off-frame or be
+    # unrecognizable — the country outline reads better as a "where in
+    # Argentina is this" reference at this scale. A province that's fully
+    # visible at its own natural zoom belongs on a dedicated camera
+    # instead (see satellite.py's region cameras).
+    rings = get_country_rings()
     if rings:
         half = RADAR_TILE_GRID // 2
         origin_x = (center_x - half) * RADAR_TILE_SIZE
