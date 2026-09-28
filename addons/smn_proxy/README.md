@@ -15,7 +15,7 @@ que lidiar con eso.
 - `GET /smn/health` → estado de la sesión (`session_ready`, cantidad de
   cookies, timestamp del último refresh).
 
-## Por qué no incluye mapas/radar/satélite
+## Por qué este proxy no sirve mapas/radar/satélite de SMN
 
 `mapa.smn.gob.ar` y `estaticos.smn.gob.ar` tienen su propio challenge de
 Cloudflare, separado del de `ws1`. El `cf_clearance` que se obtiene al
@@ -32,12 +32,11 @@ este tipo. Seguir invirtiendo en técnicas más agresivas para esquivar la
 detección de bots de Cloudflare específicamente para esto no es algo que
 valga la pena perseguir para una integración personal.
 
-**Alternativa recomendada para radar animado**: instalar la
-[Weather Radar Card](https://github.com/jpettitt/weather-radar-card) desde
-HACS, apuntada a [RainViewer](https://www.rainviewer.com/) (cubre
-Argentina). Es una card de Lovelace que dibuja el loop animado
-directamente en el navegador — no necesita ningún proxy ni integración de
-backend, y no depende de scrapear un sitio que no quiere ser scrapeado.
+La integración (`custom_components/argentina_smn`) sí tiene una entidad
+`camera` de radar animado, pero la arma con la
+[API pública de RainViewer](https://www.rainviewer.com/api.html)
+directamente desde Home Assistant — no pasa por este proxy ni depende de
+Cloudflare/SMN para eso. Ver el README del repo raíz.
 
 ## Configuración (`config.yaml` options)
 

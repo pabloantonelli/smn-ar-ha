@@ -95,6 +95,16 @@
       "short_term_alert": {
         "name": "Short-term alert"
       }
+    },
+    "camera": {
+      "radar": {
+        "name": "Radar"
+      }
+    },
+    "sensor": {
+      "short_term_summary": {
+        "name": "Short-term forecast"
+      }
     }
   }
 }

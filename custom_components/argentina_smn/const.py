@@ -47,13 +47,24 @@ API_COLD_WARNING_PATH: Final = f"{API_PATH_PREFIX}/warning/cold/area"
 API_SUN_PATH: Final = f"{API_PATH_PREFIX}/sun/location"
 API_GEOREF_PATH: Final = f"{API_PATH_PREFIX}/georef/location"
 
-# NOTE: map/radar/satellite imagery is intentionally NOT covered by this
-# integration. mapa.smn.gob.ar / estaticos.smn.gob.ar sit behind a separate
-# Cloudflare bot-management challenge that a headless/automated browser
-# can't reliably pass (see addons/smn_proxy/README.md for what was tried).
-# For animated radar in Home Assistant, use the "Weather Radar Card"
-# (HACS) pointed at RainViewer instead — it renders the animated loop
-# client-side and needs no backend integration at all.
+# Radar imagery: NOT sourced from SMN. mapa.smn.gob.ar sits behind a
+# separate Cloudflare bot-management challenge that couldn't be solved
+# reliably from a headless browser (see addons/smn_proxy/README.md), and
+# smn.gob.ar's robots.txt explicitly disallows Claude/Anthropic bots.
+# Instead this uses RainViewer's public Weather Maps API (no key needed,
+# free for personal/community use per https://www.rainviewer.com/api.html,
+# requires attribution "Weather data by RainViewer" — shown as the
+# radar camera's attribution). It only covers precipitation radar, not
+# satellite imagery.
+RAINVIEWER_INDEX_URL: Final = "https://api.rainviewer.com/public/weather-maps.json"
+RAINVIEWER_ATTRIBUTION: Final = "Weather data by RainViewer (rainviewer.com)"
+RADAR_ZOOM: Final = 7
+RADAR_TILE_GRID: Final = 3  # 3x3 tiles around the configured location
+RADAR_TILE_SIZE: Final = 256
+RADAR_COLOR_SCHEME: Final = 2  # "Universal Blue"
+RADAR_FRAME_COUNT: Final = 6  # last ~30-60 min of movement
+RADAR_FRAME_DURATION_MS: Final = 500
+RADAR_UPDATE_INTERVAL: Final = 600  # 10 min, matches RainViewer's frame cadence
 
 # Default onboarding locations (Buenos Aires)
 DEFAULT_HOME_LATITUDE: Final = -34.6037

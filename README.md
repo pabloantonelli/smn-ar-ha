@@ -16,8 +16,8 @@ Assistant, así que se separa en dos partes:
   Selenium) que resuelve el challenge, mantiene el JWT vigente, y expone un
   proxy HTTP local con la API del SMN.
 - **`custom_components/argentina_smn`** — la integración de HA (weather,
-  binary_sensors de alertas), que habla con ese proxy local en vez de
-  pegarle directo a SMN.
+  binary_sensors de alertas, sensor de resumen en texto, cámara de radar),
+  que habla con ese proxy local en vez de pegarle directo a SMN.
 
 ## Instalación
 
@@ -39,10 +39,44 @@ Assistant, así que se separa en dos partes:
 
 | Entidad | Qué es | Frecuencia de actualización |
 |---|---|---|
-| `weather.<ubicación>` | Clima actual + pronóstico de 7 días (diario y por franjas mañana/tarde/noche) | 30 min |
+| `weather.<ubicación>` | Clima actual + pronóstico de 7 días (diario y por franjas mañana/tarde/noche), con probabilidad de lluvia | 30 min |
 | `binary_sensor.<ubicación>_weather_alert` | Alerta general (hay alguna alerta activa) | 30 min |
 | `binary_sensor.<ubicación>_alert_<evento>` (11 sensores: tormenta, lluvia, nieve, viento, zonda, temperaturas altas/bajas, niebla, polvo, humo, ceniza volcánica) | Una por tipo de evento del sistema de alerta temprana del SMN | 30 min |
 | `binary_sensor.<ubicación>_short_term_alert` | Avisos a muy corto plazo (los de `smn.gob.ar/avisos_a_muy_corto_plazo`, validez de 1-2 horas) | 10 min |
+| `sensor.<ubicación>_short_term_summary` | Resumen en texto, en español, de la situación de corto plazo (ver abajo) | 10 min |
+| `camera.<ubicación>_radar` | Radar de precipitación animado (GIF, últimos ~30-60 min de movimiento) centrado en la ubicación | 10 min |
+
+### `sensor.<ubicación>_short_term_summary`: pronóstico de corto plazo en texto
+
+Sintetiza en una frase (para leer directo en un dashboard, una
+notificación o un TTS) todo lo que ya exponen los binary_sensors de
+alerta, con esta prioridad:
+
+1. Si hay un **aviso a muy corto plazo** vigente (tormenta, granizo, etc. —
+   validez 1-2h): el título del aviso, hasta qué hora es válido, y la
+   primera zona afectada. El texto completo con **todas las medidas de
+   protección** (el mismo que publica `smn.gob.ar`, campo `instructions`
+   de la API — no hace falta scrapear la página, ya viene en el JSON) va
+   en el atributo `instrucciones`, y el resto de los avisos activos en
+   `avisos_corto_plazo`.
+2. Si no, pero hay una **alerta por evento** activa hoy (tormenta, viento,
+   etc., nivel > 1): qué evento y qué nivel (amarillo/naranja/rojo), con
+   el detalle en el atributo `alertas_activas`.
+3. Si no, pero hay **alerta de ola de calor/frío**: lo indica.
+4. Si no hay nada de lo anterior: un resumen del pronóstico de hoy
+   (condición, máxima/mínima).
+
+### `camera.<ubicación>_radar`: radar animado
+
+**No viene de SMN** — `mapa.smn.gob.ar` tiene su propio challenge de
+Cloudflare que no se pudo resolver de forma confiable (detalle en
+`addons/smn_proxy/README.md`), y el `robots.txt` del SMN pide
+explícitamente que agentes tipo Claude no accedan al sitio. En su lugar,
+esta cámara arma el GIF animado con tiles de la
+[API pública de RainViewer](https://www.rainviewer.com/api.html) (gratis
+para uso personal, sin API key, requiere solo atribución — ya incluida
+como `attribution` de la entidad). Solo cubre radar de precipitación, no
+imagen satelital (RainViewer no la ofrece).
 
 El pronóstico de 7 días ya viene incluido en la entidad `weather` — se ve
 en la pestaña "Pronóstico" de su diálogo de más información, o en
@@ -75,40 +109,6 @@ integración que use esa clase, no solo esta). El significado:
 Una vez corregido el idioma del perfil (ver arriba), Home Assistant lo
 traduce solo a "Seguro"/"Inseguro" — es parte del core, no de esta
 integración.
-
-## Mapas / radar animado
-
-Esta integración deliberadamente **no** incluye mapas ni radar. Ver
-`addons/smn_proxy/README.md` para el detalle técnico de por qué (challenge
-de Cloudflare independiente en `mapa.smn.gob.ar`/`estaticos.smn.gob.ar`, no
-resuelto de forma confiable, y el propio `robots.txt` del SMN pide
-explícitamente que agentes tipo Claude no accedan al sitio).
-
-Para tener radar animado (loop, no una imagen estática) en Home Assistant,
-usar otra integración ya existente, sin depender de esta:
-
-1. **HACS → Frontend → Explorar y descargar repositorios** → buscar
-   "Weather Radar Card" ([jpettitt/weather-radar-card](https://github.com/jpettitt/weather-radar-card))
-   → Descargar. (Si no aparece en el listado, agregarla como repositorio
-   personalizado con esa URL, categoría *Dashboard*).
-2. Recargar el navegador (Ctrl+Shift+R) para que cargue la card nueva.
-3. En cualquier dashboard, "Editar" → "Agregar tarjeta" → buscar
-   "Weather Radar Card", o pegar directamente en modo YAML:
-
-   ```yaml
-   type: custom:weather-radar-card
-   source: rainviewer
-   center:
-     lat: -31.4201
-     lon: -64.1888
-   zoom: 7
-   ```
-
-   (ajustar `lat`/`lon` a tu ubicación — por defecto usa la de Home
-   Assistant si no se especifica). La card trae los frames de
-   [RainViewer](https://www.rainviewer.com/) directamente al navegador y
-   arma el loop animado sola; no necesita el add-on `smn_proxy` ni ninguna
-   integración de backend.
 
 ## Ícono de la integración
 
