@@ -160,6 +160,34 @@ def _draw_alert_polygons(
                 _draw_storm_icon(draw, centroid_x, centroid_y)
 
 
+def _draw_location_pin(
+    frame: Any, latitude: float, longitude: float, center_x: int, center_y: int
+) -> None:
+    """Mark the exact configured lat/lon with a small pin.
+
+    No label — the forecast panel already shows temperature/condition at
+    the top of this frame. Drawn at the *exact* point rather than assumed
+    to be the frame's center: the center tile is only an approximation of
+    where the configured coordinate actually falls within it.
+    """
+    from PIL import ImageDraw
+
+    half = RADAR_TILE_GRID // 2
+    origin_x = (center_x - half) * RADAR_TILE_SIZE
+    origin_y = (center_y - half) * RADAR_TILE_SIZE
+    px, py = _deg2pixel(latitude, longitude, RADAR_ZOOM)
+    x, y = px - origin_x, py - origin_y
+
+    draw = ImageDraw.Draw(frame, "RGBA")
+    radius = 3.5
+    draw.ellipse(
+        [(x - radius, y - radius), (x + radius, y + radius)],
+        fill=(255, 220, 60, 255),
+        outline=(30, 30, 30, 220),
+        width=1,
+    )
+
+
 def _draw_storm_icon(draw: Any, cx: float, cy: float, size: int = 22) -> None:
     """Draw a small storm-cloud-with-lightning marker at (cx, cy)."""
     half = size / 2
@@ -578,6 +606,7 @@ async def build_radar_snapshot_jpeg(
         _draw_alert_polygons(frame, visible_alerts, center_x, center_y)
         _draw_alert_caption(frame, visible_alerts)
 
+    _draw_location_pin(frame, latitude, longitude, center_x, center_y)
     _draw_forecast_panel(frame, current_weather, hourly_forecast)
 
     buffer = io.BytesIO()

@@ -336,29 +336,62 @@ def _format_frame_caption(when: datetime) -> str:
     return f"{local.strftime('%H:%M')} · {relative}"
 
 
-def _draw_caption(frame: Any, text: str) -> None:
-    """Draw a small timestamp banner in the bottom-left corner."""
+def _draw_caption(
+    frame: Any,
+    text: str,
+    frame_index: int | None = None,
+    total_frames: int | None = None,
+) -> None:
+    """Draw a timestamp banner across the bottom of the frame.
+
+    A single still image just gets the timestamp text. An animation frame
+    (when `frame_index`/`total_frames` are given) also gets a row of dots
+    spanning the full width — one per frame, oldest to newest left to
+    right, with the current frame's dot lit up — so the strip of frames
+    reads as an actual timeline/scrubber while it plays, not just a
+    changing clock in the corner.
+    """
     from PIL import ImageDraw, ImageFont
 
     try:
-        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=15)
+        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=22)
     except OSError:
         try:
-            font = ImageFont.load_default(size=15)
+            font = ImageFont.load_default(size=22)
         except TypeError:
             font = ImageFont.load_default()
 
     draw = ImageDraw.Draw(frame, "RGBA")
-    padding = 6
-    text_width = draw.textlength(text, font=font)
-    line_height = font.size + 6 if hasattr(font, "size") else 21
+    padding = 10
+    text_height = font.size if hasattr(font, "size") else 22
+    has_timeline = frame_index is not None and total_frames and total_frames > 1
+    dots_height = 14 if has_timeline else 0
+    bar_height = text_height + 2 * padding + dots_height
+
     draw.rectangle(
-        [(0, frame.height - line_height), (text_width + 2 * padding, frame.height)],
-        fill=(0, 0, 0, 165),
+        [(0, frame.height - bar_height), (frame.width, frame.height)], fill=(0, 0, 0, 175)
     )
     draw.text(
-        (padding, frame.height - line_height + 3), text, font=font, fill=(255, 255, 255, 255)
+        (padding, frame.height - bar_height + padding - 2),
+        text,
+        font=font,
+        fill=(255, 255, 255, 255),
     )
+
+    if has_timeline:
+        dots_y = frame.height - dots_height + 2
+        margin = padding
+        span = frame.width - 2 * margin
+        step = span / (total_frames - 1) if total_frames > 1 else 0
+        for i in range(total_frames):
+            cx = margin + i * step
+            if i == frame_index:
+                radius = 5
+                color = (255, 220, 60, 255)
+            else:
+                radius = 3
+                color = (255, 255, 255, 130)
+            draw.ellipse([(cx - radius, dots_y - radius), (cx + radius, dots_y + radius)], fill=color)
 
 
 _IR_LEGEND_STEPS = [
@@ -411,6 +444,72 @@ def _draw_ir_legend(frame: Any) -> None:
         )
 
 
+def _draw_location_pin(
+    frame: Any,
+    latitude: float,
+    longitude: float,
+    zoom: int,
+    origin_x: float,
+    origin_y: float,
+    current_weather: dict[str, Any] | None,
+) -> None:
+    """Mark the configured location with a pin, labeled with its current temperature.
+
+    Drawn on every satellite view (local, country, province) so the
+    configured point is identifiable on the image itself, not just
+    implied by "this is roughly the area shown". `current_weather` is
+    coordinator.data's own field (already fetched for the weather entity),
+    same shape radar.py's caption uses — temperature-only here (not the
+    fuller forecast strip radar.py draws), since these frames are already
+    busier with the outline/legend/timeline overlays.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    px, py = _deg2pixel(latitude, longitude, zoom)
+    x, y = px - origin_x, py - origin_y
+    if not (-20 <= x <= frame.width + 20 and -20 <= y <= frame.height + 20):
+        return  # Off-frame (e.g. a province view where the point falls outside it).
+
+    # Deliberately tiny — a marker that helps locate the point without
+    # covering meaningful area of the image, especially on an animation
+    # where it sits on every frame.
+    draw = ImageDraw.Draw(frame, "RGBA")
+    radius = 3.5
+    draw.ellipse(
+        [(x - radius, y - radius), (x + radius, y + radius)],
+        fill=(255, 220, 60, 255),
+        outline=(30, 30, 30, 220),
+        width=1,
+    )
+
+    temperature = (current_weather or {}).get("temperature")
+    if temperature is None:
+        return
+    label = f"{temperature:.0f}°C"
+
+    try:
+        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=12)
+    except OSError:
+        try:
+            font = ImageFont.load_default(size=12)
+        except TypeError:
+            font = ImageFont.load_default()
+
+    text_width = draw.textlength(label, font=font)
+    label_x, label_y = x + radius + 4, y - 8
+    draw.rectangle(
+        [(label_x - 2, label_y - 1), (label_x + text_width + 2, label_y + 14)],
+        fill=(0, 0, 0, 150),
+    )
+    draw.text((label_x, label_y), label, font=font, fill=(255, 255, 255, 255))
+
+
+def _local_origin(center_x: int, center_y: int) -> tuple[float, float]:
+    """World-pixel origin (top-left) of the local fixed-zoom tile grid."""
+    half = SATELLITE_TILE_GRID // 2
+    return (center_x - half) * SATELLITE_TILE_SIZE, (center_y - half) * SATELLITE_TILE_SIZE
+
+
 def _draw_outline(frame: Any, center_x: int, center_y: int) -> None:
     """Draw Argentina's national outline as a light location-context reference.
 
@@ -443,6 +542,7 @@ async def build_satellite_snapshot_jpeg(
     is_daytime: bool,
     with_motion_arrow: bool = True,
     force_infrared: bool = False,
+    current_weather: dict[str, Any] | None = None,
 ) -> bytes | None:
     """Build a single static JPEG: latest GIBS satellite frame for the area.
 
@@ -451,7 +551,9 @@ async def build_satellite_snapshot_jpeg(
     _estimate_motion_vector's docstring for what that vector does and
     doesn't mean. `force_infrared` always uses Band13 clean IR instead of
     the day/night-dependent default — for a camera that wants that view
-    specifically, not just as the night fallback.
+    specifically, not just as the night fallback. `current_weather` (same
+    shape as coordinator.data's field) labels the location pin's
+    temperature, if given.
     """
     layer, matrix_set = _layer_for(is_daytime, force_infrared)
     center_x, center_y = _deg2tile(latitude, longitude, SATELLITE_ZOOM)
@@ -473,6 +575,14 @@ async def build_satellite_snapshot_jpeg(
             _draw_motion_arrow(frame, vector)
 
     _draw_outline(frame, center_x, center_y)
+    _draw_location_pin(
+        frame,
+        latitude,
+        longitude,
+        SATELLITE_ZOOM,
+        *_local_origin(center_x, center_y),
+        current_weather,
+    )
     if layer == GIBS_LAYER_INFRARED:
         _draw_ir_legend(frame)
     _draw_caption(frame, _format_frame_caption(resolved_time))
@@ -487,6 +597,8 @@ async def build_satellite_animation_gif(
     latitude: float,
     longitude: float,
     is_daytime: bool,
+    force_infrared: bool = False,
+    current_weather: dict[str, Any] | None = None,
 ) -> bytes | None:
     """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES GIBS frames.
 
@@ -495,7 +607,7 @@ async def build_satellite_animation_gif(
     attached as a photo — several notification integrations mis-handle a
     non-JPEG camera attachment, see radar.py's docstring.
     """
-    layer, matrix_set = _layer_for(is_daytime)
+    layer, matrix_set = _layer_for(is_daytime, force_infrared)
     center_x, center_y = _deg2tile(latitude, longitude, SATELLITE_ZOOM)
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
     if latest_time is None:
@@ -510,9 +622,20 @@ async def build_satellite_animation_gif(
     # holes in it — see _fetch_mosaic's docstring. Occasionally losing one
     # of SATELLITE_ANIMATION_FRAMES beats a visibly broken animation.
     kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
-    for mosaic, when in kept:
+    total = len(kept)
+    for i, (mosaic, when) in enumerate(kept):
         _draw_outline(mosaic, center_x, center_y)
-        _draw_caption(mosaic, _format_frame_caption(when))
+        _draw_location_pin(
+            mosaic,
+            latitude,
+            longitude,
+            SATELLITE_ZOOM,
+            *_local_origin(center_x, center_y),
+            current_weather,
+        )
+        if layer == GIBS_LAYER_INFRARED:
+            _draw_ir_legend(mosaic)
+        _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)
     frames = [mosaic.convert("RGB") for mosaic, _when in kept]
     if not frames:
         return None
@@ -598,7 +721,7 @@ async def _fetch_complete_region_mosaic(
 
 
 def _region_center_and_zoom(
-    rings: list[list[tuple[float, float]]], is_daytime: bool
+    rings: list[list[tuple[float, float]]], is_daytime: bool, force_infrared: bool = False
 ) -> tuple[str, str, int, int, int, int, int]:
     """Resolve (layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y) for `rings`.
 
@@ -608,8 +731,8 @@ def _region_center_and_zoom(
     going tighter than the data's native resolution has to happen as a
     post-fetch digital crop instead — see _apply_extra_zoom.
     """
-    layer, matrix_set = _layer_for(is_daytime)
-    max_zoom = _max_zoom_for(is_daytime)
+    layer, matrix_set = _layer_for(is_daytime, force_infrared)
+    max_zoom = _max_zoom_for(is_daytime, force_infrared)
     min_lat, min_lon, max_lat, max_lon = get_bbox(rings)
     zoom = _zoom_for_bbox(min_lat, min_lon, max_lat, max_lon, SATELLITE_REGION_TILE_GRID, max_zoom)
     center_lat = (min_lat + max_lat) / 2
@@ -647,6 +770,9 @@ async def build_region_snapshot_jpeg(
     rings: list[list[tuple[float, float]]],
     is_daytime: bool,
     fill_factor: float = 0.9,
+    force_infrared: bool = False,
+    pin: tuple[float, float] | None = None,
+    current_weather: dict[str, Any] | None = None,
 ) -> bytes | None:
     """Build a static JPEG covering a whole area (a province, or all of Argentina).
 
@@ -658,12 +784,14 @@ async def build_region_snapshot_jpeg(
     `fill_factor` > 1 crops in tighter than GIBS' native tile resolution
     allows and scales back up ("digital zoom" — see _apply_extra_zoom);
     <= 1 is a no-op. Its own outline is drawn on top (see
-    boundaries.draw_region_overlay).
+    boundaries.draw_region_overlay). `pin` is the configured location's
+    (latitude, longitude), marked with `current_weather`'s temperature —
+    left out (None) if the point wouldn't fall inside this frame anyway.
     """
     if not rings:
         return None
     layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
-        rings, is_daytime
+        rings, is_daytime, force_infrared
     )
 
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
@@ -677,7 +805,11 @@ async def build_region_snapshot_jpeg(
     draw_region_overlay(
         mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
     )
+    if pin:
+        _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)
     mosaic = _apply_extra_zoom(mosaic, fill_factor)
+    if layer == GIBS_LAYER_INFRARED:
+        _draw_ir_legend(mosaic)
     _draw_caption(mosaic, _format_frame_caption(resolved_time))
 
     buffer = io.BytesIO()
@@ -690,6 +822,9 @@ async def build_region_animation_gif(
     rings: list[list[tuple[float, float]]],
     is_daytime: bool,
     fill_factor: float = 0.9,
+    force_infrared: bool = False,
+    pin: tuple[float, float] | None = None,
+    current_weather: dict[str, Any] | None = None,
 ) -> bytes | None:
     """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES frames for a whole area.
 
@@ -700,7 +835,7 @@ async def build_region_animation_gif(
     if not rings:
         return None
     layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
-        rings, is_daytime
+        rings, is_daytime, force_infrared
     )
 
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
@@ -716,13 +851,18 @@ async def build_region_animation_gif(
         )
     )
     kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
+    total = len(kept)
     zoomed: list[Any] = []
-    for mosaic, when in kept:
+    for i, (mosaic, when) in enumerate(kept):
         draw_region_overlay(
             mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
         )
+        if pin:
+            _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)
         mosaic = _apply_extra_zoom(mosaic, fill_factor)
-        _draw_caption(mosaic, _format_frame_caption(when))
+        if layer == GIBS_LAYER_INFRARED:
+            _draw_ir_legend(mosaic)
+        _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)
         zoomed.append(mosaic)
     frames = [mosaic.convert("RGB") for mosaic in zoomed]
     if not frames:
