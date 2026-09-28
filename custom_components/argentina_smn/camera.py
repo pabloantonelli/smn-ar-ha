@@ -49,6 +49,12 @@ class SMNRadarCamera(Camera):
         longitude: float,
     ) -> None:
         super().__init__()
+        # Camera.__init__ sets self.content_type = DEFAULT_CONTENT_TYPE
+        # (image/jpeg), so this has to be set as an instance attribute
+        # after calling super().__init__(), not as a class attribute —
+        # otherwise it gets overwritten back to jpeg and the frontend
+        # fails to render the GIF bytes we actually return.
+        self.content_type = "image/gif"
         self._attr_unique_id = f"{config_entry.entry_id}_radar"
         self._attr_name = f"{name} Radar"
         self._latitude = latitude
@@ -75,12 +81,23 @@ class SMNRadarCamera(Camera):
             return self._cached_gif
 
         session = async_get_clientsession(self.hass)
-        gif = await build_animated_radar_gif(session, self._latitude, self._longitude)
+        try:
+            gif = await build_animated_radar_gif(session, self._latitude, self._longitude)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Error building radar GIF: %s", err, exc_info=True)
+            gif = None
 
         if gif:
             self._cached_gif = gif
             self._cached_at = now
             return gif
 
+        if not self._cached_gif:
+            _LOGGER.warning(
+                "No radar image available yet for %s,%s (RainViewer fetch failed "
+                "and no cached frame exists)",
+                self._latitude,
+                self._longitude,
+            )
         # Fall back to the last good frame rather than a broken image.
         return self._cached_gif
