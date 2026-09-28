@@ -29,6 +29,7 @@ from .const import (
     RADAR_TILE_SIZE,
     RADAR_ZOOM,
     RAINVIEWER_INDEX_URL,
+    RAINVIEWER_MAX_ZOOM,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -311,6 +312,83 @@ async def _fetch_basemap_mosaic(
     return mosaic
 
 
+async def _fetch_radar_layer(
+    session: aiohttp.ClientSession,
+    host: str,
+    frame_path: str,
+    center_x: int,
+    center_y: int,
+):
+    """Fetch RainViewer's radar tiles for the mosaic's area and scale to match it.
+
+    RainViewer's radar tiles top out at RAINVIEWER_MAX_ZOOM (zoom 8+ returns
+    a "Zoom Level Not Supported" placeholder image) — verified directly
+    against their tile server. When RADAR_ZOOM is higher than that (for a
+    more detailed basemap), the radar tiles covering the same area are
+    fetched at RAINVIEWER_MAX_ZOOM instead and resized up to fit, so the
+    map itself can still be more zoomed in even though the radar data's
+    own resolution is capped by RainViewer.
+    """
+    from PIL import Image
+
+    half = RADAR_TILE_GRID // 2
+    target_size = RADAR_TILE_SIZE * RADAR_TILE_GRID
+    origin_x = (center_x - half) * RADAR_TILE_SIZE
+    origin_y = (center_y - half) * RADAR_TILE_SIZE
+
+    if RAINVIEWER_MAX_ZOOM >= RADAR_ZOOM:
+        # No scaling needed, fetch directly at RADAR_ZOOM.
+        layer = Image.new("RGBA", (target_size, target_size))
+        for dx in range(-half, half + 1):
+            for dy in range(-half, half + 1):
+                x, y = center_x + dx, center_y + dy
+                url = (
+                    f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RADAR_ZOOM}/{x}/{y}/"
+                    f"{RADAR_COLOR_SCHEME}/1_1.png"
+                )
+                tile_img = await _fetch_tile(session, url)
+                layer.paste(
+                    tile_img, ((dx + half) * RADAR_TILE_SIZE, (dy + half) * RADAR_TILE_SIZE)
+                )
+        return layer
+
+    scale = 2.0 ** (RAINVIEWER_MAX_ZOOM - RADAR_ZOOM)
+    origin_x_r = origin_x * scale
+    origin_y_r = origin_y * scale
+    size_r = target_size * scale
+
+    tile_x_start = int(origin_x_r // RADAR_TILE_SIZE)
+    tile_x_end = int((origin_x_r + size_r) // RADAR_TILE_SIZE)
+    tile_y_start = int(origin_y_r // RADAR_TILE_SIZE)
+    tile_y_end = int((origin_y_r + size_r) // RADAR_TILE_SIZE)
+
+    raw = Image.new(
+        "RGBA",
+        (
+            (tile_x_end - tile_x_start + 1) * RADAR_TILE_SIZE,
+            (tile_y_end - tile_y_start + 1) * RADAR_TILE_SIZE,
+        ),
+    )
+    for x in range(tile_x_start, tile_x_end + 1):
+        for y in range(tile_y_start, tile_y_end + 1):
+            url = (
+                f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RAINVIEWER_MAX_ZOOM}/{x}/{y}/"
+                f"{RADAR_COLOR_SCHEME}/1_1.png"
+            )
+            tile_img = await _fetch_tile(session, url)
+            raw.paste(
+                tile_img,
+                ((x - tile_x_start) * RADAR_TILE_SIZE, (y - tile_y_start) * RADAR_TILE_SIZE),
+            )
+
+    crop_left = round(origin_x_r - tile_x_start * RADAR_TILE_SIZE)
+    crop_top = round(origin_y_r - tile_y_start * RADAR_TILE_SIZE)
+    cropped = raw.crop(
+        (crop_left, crop_top, crop_left + round(size_r), crop_top + round(size_r))
+    )
+    return cropped.resize((target_size, target_size), Image.NEAREST)
+
+
 async def _fetch_radar_mosaic(
     session: aiohttp.ClientSession,
     host: str,
@@ -319,24 +397,10 @@ async def _fetch_radar_mosaic(
     center_y: int,
     basemap: Any,
 ):
-    """Fetch the radar tile grid for a single frame, composited over the basemap."""
-    from PIL import Image
-
-    half = RADAR_TILE_GRID // 2
+    """Fetch the radar layer for a single frame, composited over the basemap."""
     frame = basemap.copy()
-
-    for dx in range(-half, half + 1):
-        for dy in range(-half, half + 1):
-            x, y = center_x + dx, center_y + dy
-            url = (
-                f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RADAR_ZOOM}/{x}/{y}/"
-                f"{RADAR_COLOR_SCHEME}/1_1.png"
-            )
-            tile_img = await _fetch_tile(session, url)
-            frame.alpha_composite(
-                tile_img, ((dx + half) * RADAR_TILE_SIZE, (dy + half) * RADAR_TILE_SIZE)
-            )
-
+    layer = await _fetch_radar_layer(session, host, frame_path, center_x, center_y)
+    frame.alpha_composite(layer)
     return frame
 
 

@@ -37,14 +37,59 @@ Assistant, así que se separa en dos partes:
 
 ## Entidades que expone
 
-| Entidad | Qué es | Frecuencia de actualización |
+Esta sección es la referencia completa de cada entidad — qué representa,
+qué la enciende/actualiza, y qué hay en sus atributos. Se ve directo en
+HA vía Ajustes → Dispositivos y Servicios → SMN → Documentación, o desde
+HACS al ver el repositorio (`render_readme: true`).
+
+| Entidad | Qué es | Actualiza cada |
 |---|---|---|
-| `weather.<ubicación>` | Clima actual + pronóstico de 7 días (diario y por franjas mañana/tarde/noche), con probabilidad de lluvia | 30 min |
-| `binary_sensor.<ubicación>_weather_alert` | Alerta general (hay alguna alerta activa) | 30 min |
-| `binary_sensor.<ubicación>_alert_<evento>` (11 sensores: tormenta, lluvia, nieve, viento, zonda, temperaturas altas/bajas, niebla, polvo, humo, ceniza volcánica) | Una por tipo de evento del sistema de alerta temprana del SMN | 30 min |
-| `binary_sensor.<ubicación>_short_term_alert` | Avisos a muy corto plazo (los de `smn.gob.ar/avisos_a_muy_corto_plazo`, validez de 1-2 horas) | 10 min |
-| `sensor.<ubicación>_short_term_summary` | Resumen en texto, en español, de la situación de corto plazo (ver abajo) | 10 min |
-| `camera.<ubicación>_radar` | Radar de precipitación animado (GIF, últimos ~30-60 min de movimiento) centrado en la ubicación | 10 min |
+| `weather.<ubicación>` | Clima actual + pronóstico de 7 días | 30 min |
+| `binary_sensor.<ubicación>_weather_alert` | ¿Hay alguna alerta por evento activa hoy? | 30 min |
+| `binary_sensor.<ubicación>_alert_<evento>` (×11) | Una por tipo de evento (tormenta, lluvia, nieve, viento, zonda, temp. altas/bajas, niebla, polvo, humo, ceniza volcánica) | 30 min |
+| `binary_sensor.<ubicación>_short_term_alert` | **¿Tu ubicación exacta está dentro de una zona de alerta activa ahora?** | 10 min |
+| `sensor.<ubicación>_short_term_summary` | Resumen en una frase de la situación de corto plazo | 10 min |
+| `sensor.<ubicación>_nationwide_avisos` | Avisos activos en todo el país, agrupados por provincia | 10 min |
+| `camera.<ubicación>_radar` | Mapa con radar de precipitación + zonas de alerta dibujadas | 10 min |
+
+### `weather.<ubicación>`: clima actual y pronóstico
+
+La entidad de clima estándar de HA. `state`/atributos: temperatura,
+sensación térmica, humedad, presión, viento, visibilidad. Pestaña
+"Pronóstico" (`async_forecast_daily`/`async_forecast_hourly`): 7 días,
+con máxima/mínima diaria y, por franja horaria (madrugada/mañana/
+tarde/noche), condición, temperatura, humedad, viento y probabilidad de
+lluvia. Es el mismo pronóstico que muestra `smn.gob.ar` — la API no
+ofrece nada "extendido" más allá de eso (se probaron endpoints
+candidatos como `forecast/week`/`tendency`, ninguno existe).
+
+### `binary_sensor.<ubicación>_alert_<evento>` (los 11 sensores por tipo)
+
+Uno por cada tipo de evento del sistema de alerta temprana del SMN
+(`warning/alert/location/{id}`). `on` (`Unsafe`) = ese evento tiene nivel
+> 1 (amarillo/naranja/rojo) para hoy; `off` (`Safe`) = sin alerta de ese
+tipo. `binary_sensor.<ubicación>_weather_alert` es el "resumen": `on` si
+cualquiera de los 11 está activo.
+
+### `binary_sensor.<ubicación>_short_term_alert`: ¿estoy en zona de peligro?
+
+**Esta es la respuesta directa a "¿mi ubicación está dentro de algún
+polígono de alerta ahora mismo?"** Usa `warning/shortterm/location/{id}`,
+que es el propio SMN haciendo ese cálculo (punto-dentro-del-polígono)
+contra la lat/lon exacta configurada — no es una aproximación nuestra.
+
+- `on` (`Unsafe`): tu ubicación está dentro de al menos un aviso a muy
+  corto plazo vigente (tormenta/granizo/etc., validez 1-2h).
+- `off` (`Safe`): no lo está — aunque haya avisos activos en otras zonas
+  cercanas (para eso está `sensor.<ubicación>_nationwide_avisos`).
+
+Atributos cuando está `on`: `alert_count`, y `alerts` con el detalle
+completo de cada aviso (título, vigencia, zonas, severidad, y
+`instructions` — las medidas de protección, tal cual las publica SMN).
+
+Usalo para automatizaciones tipo "avisame por notificación si
+`binary_sensor.<ubicación>_short_term_alert` pasa a `on`" — es la señal
+más precisa y específica a tu ubicación que expone esta integración.
 
 ### `sensor.<ubicación>_short_term_summary`: pronóstico de corto plazo en texto
 
@@ -65,6 +110,17 @@ alerta, con esta prioridad:
 3. Si no, pero hay **alerta de ola de calor/frío**: lo indica.
 4. Si no hay nada de lo anterior: un resumen del pronóstico de hoy
    (condición, máxima/mínima).
+
+### `sensor.<ubicación>_nationwide_avisos`: avisos en todo el país
+
+A diferencia de todo lo anterior (específico a tu ubicación), este usa
+`warning/shortterm/` **sin** filtro de ubicación — los avisos a muy corto
+plazo vigentes en cualquier parte de Argentina en este momento. `state`:
+cantidad total + provincias afectadas (ej. "3 avisos vigentes en
+Córdoba, Santa Fe"). Atributo `por_provincia`: diccionario con el detalle
+de cada aviso agrupado por provincia. Es la misma entidad que alimenta
+los polígonos que dibuja `camera.<ubicación>_radar` (ver abajo) — mismos
+datos, dos formas de verlos (texto vs. mapa).
 
 ### `camera.<ubicación>_radar`: radar animado
 
@@ -93,7 +149,16 @@ hora de validez) — usando el campo `geometry` de `warning/shortterm`, la
 misma data ya validada que usa `sensor.<ubicación>_short_term_summary`. A
 diferencia del radar de RainViewer, esto es 100% confiable para Argentina
 porque sale directo de la API del SMN, no de un agregador de terceros con
-cobertura pareja a nivel mundial pero floja en esta región.
+cobertura pareja a nivel mundial pero floja en esta región. Los avisos
+dibujados son los que se superponen con el área visible del mapa (no
+solo los que caen exactamente sobre tu punto — usa la misma data que
+`sensor.<ubicación>_nationwide_avisos`), así que se ve cualquier zona de
+alerta cercana aunque tu ubicación puntual no esté dentro del polígono.
+
+**Zoom**: la grilla es de 5×5 tiles a zoom 9 (`RADAR_ZOOM`/`RADAR_TILE_GRID`
+en `const.py`), cubriendo aproximadamente 300km alrededor de tu ubicación
+— suficiente para ver tu ciudad y alrededores con detalle, más avisos en
+zonas vecinas. Si querés más o menos zoom, se ajusta ahí.
 
 El pronóstico de 7 días ya viene incluido en la entidad `weather` — se ve
 en la pestaña "Pronóstico" de su diálogo de más información, o en

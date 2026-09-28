@@ -76,10 +76,15 @@ BASEMAP_USER_AGENT: Final = (
 RAINVIEWER_ATTRIBUTION: Final = (
     "Weather data by RainViewer (rainviewer.com) · Map © OpenStreetMap contributors"
 )
-RADAR_ZOOM: Final = 7
-RADAR_TILE_GRID: Final = 3  # 3x3 tiles around the configured location
+RADAR_ZOOM: Final = 9
+RADAR_TILE_GRID: Final = 5  # 5x5 tiles around the configured location (~300km across)
 RADAR_TILE_SIZE: Final = 256
 RADAR_COLOR_SCHEME: Final = 2  # "Universal Blue"
+# RainViewer's radar tiles top out here — zoom 8+ returns a "Zoom Level Not
+# Supported" placeholder (verified directly against their tile server). When
+# RADAR_ZOOM is higher (for a more detailed basemap), radar.py fetches at
+# this zoom instead and scales the result up to fit.
+RAINVIEWER_MAX_ZOOM: Final = 7
 RADAR_FRAME_COUNT: Final = 6  # last ~30-60 min of movement
 RADAR_FRAME_DURATION_MS: Final = 500
 RADAR_UPDATE_INTERVAL: Final = 600  # 10 min, matches RainViewer's frame cadence
