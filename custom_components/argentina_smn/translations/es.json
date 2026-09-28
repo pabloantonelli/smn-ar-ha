@@ -32,6 +32,28 @@
       }
     }
   },
+  "services": {
+    "get_alerts": {
+      "name": "Obtener alertas meteorológicas",
+      "description": "Obtiene las alertas y avisos meteorológicos vigentes para la ubicación configurada. Devuelve las alertas activas con nivel de severidad, descripción e instrucciones, para usar en automatizaciones.",
+      "fields": {
+        "config_entry_id": {
+          "name": "ID de la entrada de configuración",
+          "description": "Opcional. El ID de la entrada de configuración de Home Assistant (no el ID de ubicación del SMN). Dejar vacío para usar la integración SMN configurada por defecto. Encontrás este ID en Ajustes > Dispositivos y Servicios > SMN > tres puntos > Descargar diagnósticos."
+        }
+      }
+    },
+    "get_alerts_for_location": {
+      "name": "Obtener alertas para una ubicación específica",
+      "description": "Obtiene las alertas meteorológicas para cualquier ID de ubicación del SMN. Devuelve las alertas activas con nivel de severidad, descripción e instrucciones.",
+      "fields": {
+        "location_id": {
+          "name": "ID de ubicación",
+          "description": "El ID de ubicación del SMN para el cual obtener las alertas. Ejemplo: 4864 para Ciudad Autónoma de Buenos Aires."
+        }
+      }
+    }
+  },
   "entity": {
     "binary_sensor": {
       "weather_alert": {

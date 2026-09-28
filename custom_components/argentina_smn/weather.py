@@ -199,6 +199,10 @@ class ArgentinaSMNWeather(
                 # Hourly forecast has individual period data
                 weather_obj = item.get("weather")
                 _LOGGER.info("Hourly forecast for %s - weather: %s", item.get("datetime"), weather_obj)
+                rain_prob_range = item.get("rain_prob_range")
+                precipitation_probability = (
+                    max(rain_prob_range) if rain_prob_range else None
+                )
                 forecast = Forecast(
                     datetime=self._parse_datetime(item.get("datetime")),
                     native_temperature=item.get("temperature"),
@@ -206,6 +210,7 @@ class ArgentinaSMNWeather(
                     humidity=item.get("humidity"),
                     native_wind_speed=item.get("wind_speed"),
                     wind_bearing=item.get("wind_direction"),
+                    precipitation_probability=precipitation_probability,
                 )
 
             forecasts.append(forecast)
