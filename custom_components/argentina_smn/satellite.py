@@ -99,6 +99,14 @@ def _recent_frame_times(latest: datetime, count: int) -> list[datetime]:
 async def _fetch_tile(
     session: aiohttp.ClientSession, url: str
 ):
+    """Fetch a single tile image, or None if GIBS doesn't have it (yet).
+
+    Unlike radar.py's/the basemap's _fetch_tile, a missing GIBS tile isn't
+    silently swapped for a transparent placeholder here — a timestamp with
+    even one missing tile (GIBS sometimes publishes a frame's tiles
+    incrementally, a few seconds apart) needs to be treated as incomplete
+    and skipped by the caller, not stitched in as a black square.
+    """
     from PIL import Image
 
     try:
@@ -109,7 +117,7 @@ async def _fetch_tile(
         return Image.open(io.BytesIO(tile_bytes)).convert("RGBA")
     except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as err:
         _LOGGER.debug("Error fetching GIBS tile %s: %s", url, err)
-        return Image.new("RGBA", (SATELLITE_TILE_SIZE, SATELLITE_TILE_SIZE), (0, 0, 0, 0))
+        return None
 
 
 async def _fetch_mosaic(
@@ -119,8 +127,13 @@ async def _fetch_mosaic(
     when: datetime,
     center_x: int,
     center_y: int,
-):
-    """Fetch and stitch a tile grid for one GIBS frame timestamp."""
+) -> tuple[Any, bool]:
+    """Fetch and stitch a tile grid for one GIBS frame timestamp.
+
+    Returns (mosaic, complete) — `complete` is False if any tile in the
+    grid was missing, so callers can fall back to an earlier timestamp
+    instead of showing a mosaic with black holes in it.
+    """
     from PIL import Image
 
     half = SATELLITE_TILE_GRID // 2
@@ -143,9 +156,42 @@ async def _fetch_mosaic(
         for dx, dy in positions
     ]
     tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
+    complete = all(tile is not None for tile in tiles)
     for (dx, dy), tile_img in zip(positions, tiles):
+        if tile_img is None:
+            tile_img = Image.new("RGBA", (SATELLITE_TILE_SIZE, SATELLITE_TILE_SIZE), (0, 0, 0, 0))
         mosaic.paste(tile_img, ((dx + half) * SATELLITE_TILE_SIZE, (dy + half) * SATELLITE_TILE_SIZE))
-    return mosaic
+    return mosaic, complete
+
+
+async def _fetch_complete_mosaic(
+    session: aiohttp.ClientSession,
+    layer: str,
+    matrix_set: str,
+    start_time: datetime,
+    center_x: int,
+    center_y: int,
+    max_attempts: int = 4,
+):
+    """Fetch a mosaic at start_time, stepping back a frame at a time until complete.
+
+    Handles GIBS occasionally serving a partially-published timestamp (see
+    _fetch_mosaic). Falls back through up to `max_attempts` earlier 10-min
+    frames; if none come back complete, returns the last (incomplete) one
+    fetched rather than nothing, since a slightly stale/partial frame beats
+    an empty camera.
+    """
+    mosaic, complete, when = None, False, start_time
+    for i in range(max_attempts):
+        when = start_time - i * _FRAME_INTERVAL
+        mosaic, complete = await _fetch_mosaic(session, layer, matrix_set, when, center_x, center_y)
+        if complete:
+            return mosaic, when
+    _LOGGER.debug(
+        "No complete GIBS mosaic found for %s within %d attempts before %s, using partial frame",
+        layer, max_attempts, start_time,
+    )
+    return mosaic, when
 
 
 def _estimate_motion_vector(frame_a: Any, frame_b: Any) -> tuple[float, float] | None:
@@ -245,13 +291,15 @@ async def build_satellite_snapshot_jpeg(
     if latest_time is None:
         _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
         return None
-    times = _recent_frame_times(latest_time, 2)
-
-    latest = await _fetch_mosaic(session, layer, matrix_set, times[-1], center_x, center_y)
+    latest, resolved_time = await _fetch_complete_mosaic(
+        session, layer, matrix_set, latest_time, center_x, center_y
+    )
     frame = latest.copy()
 
     if with_motion_arrow:
-        previous = await _fetch_mosaic(session, layer, matrix_set, times[-2], center_x, center_y)
+        previous, _ = await _fetch_complete_mosaic(
+            session, layer, matrix_set, resolved_time - _FRAME_INTERVAL, center_x, center_y
+        )
         vector = _estimate_motion_vector(previous, latest)
         if vector:
             _draw_motion_arrow(frame, vector)
@@ -282,10 +330,13 @@ async def build_satellite_animation_gif(
         return None
     times = _recent_frame_times(latest_time, SATELLITE_ANIMATION_FRAMES)
 
-    mosaics = await asyncio.gather(
+    results = await asyncio.gather(
         *(_fetch_mosaic(session, layer, matrix_set, when, center_x, center_y) for when in times)
     )
-    frames = [m.convert("RGB") for m in mosaics]
+    # A frame with any missing tile is dropped rather than shown with black
+    # holes in it — see _fetch_mosaic's docstring. Occasionally losing one
+    # of SATELLITE_ANIMATION_FRAMES beats a visibly broken animation.
+    frames = [mosaic.convert("RGB") for mosaic, complete in results if complete]
     if not frames:
         return None
 
