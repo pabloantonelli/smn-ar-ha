@@ -76,6 +76,24 @@ BASEMAP_USER_AGENT: Final = (
 RAINVIEWER_ATTRIBUTION: Final = (
     "Weather data by RainViewer (rainviewer.com) · Map © OpenStreetMap contributors"
 )
+# Spanish labels for HA condition strings, used to caption the radar
+# snapshot image (drawn with Pillow, not HA's own translation system —
+# HA core's own condition strings are Lokalise-managed and can't be
+# localized by files in this repo, see the README's translations note).
+CONDITION_LABELS_ES: Final = {
+    ATTR_CONDITION_CLEAR_NIGHT: "Despejado",
+    ATTR_CONDITION_CLOUDY: "Nublado",
+    ATTR_CONDITION_FOG: "Niebla",
+    ATTR_CONDITION_LIGHTNING_RAINY: "Tormenta",
+    ATTR_CONDITION_PARTLYCLOUDY: "Parcialmente nublado",
+    ATTR_CONDITION_POURING: "Lluvias fuertes",
+    ATTR_CONDITION_RAINY: "Lluvia",
+    ATTR_CONDITION_SNOWY: "Nieve",
+    ATTR_CONDITION_SNOWY_RAINY: "Lluvia y nieve",
+    ATTR_CONDITION_SUNNY: "Despejado",
+    ATTR_CONDITION_WINDY: "Ventoso",
+}
+
 RADAR_ZOOM: Final = 9
 RADAR_TILE_GRID: Final = 5  # 5x5 tiles around the configured location (~300km across)
 RADAR_TILE_SIZE: Final = 256
@@ -85,8 +103,6 @@ RADAR_COLOR_SCHEME: Final = 2  # "Universal Blue"
 # RADAR_ZOOM is higher (for a more detailed basemap), radar.py fetches at
 # this zoom instead and scales the result up to fit.
 RAINVIEWER_MAX_ZOOM: Final = 7
-RADAR_FRAME_COUNT: Final = 6  # last ~30-60 min of movement
-RADAR_FRAME_DURATION_MS: Final = 500
 RADAR_UPDATE_INTERVAL: Final = 600  # 10 min, matches RainViewer's frame cadence
 
 # Default onboarding locations (Buenos Aires)

@@ -94,6 +94,9 @@
       },
       "short_term_alert": {
         "name": "Short-term alert"
+      },
+      "hail_alert": {
+        "name": "Hail alert"
       }
     },
     "camera": {

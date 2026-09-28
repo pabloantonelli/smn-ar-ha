@@ -58,10 +58,11 @@ dispositivo o una palabra del nombre visible (ej. "corto plazo").
 | `weather` | (el nombre que le pusiste al configurar) | Clima actual + pronóstico de 7 días | 30 min |
 | `binary_sensor` | Alerta meteorológica | ¿Hay alguna alerta por evento activa hoy? | 30 min |
 | `binary_sensor` ×11 | Alerta por tormenta / lluvia / nieve / viento / viento zonda / altas y bajas temperaturas / niebla / polvo / humo / ceniza volcánica | Una por tipo de evento | 30 min |
+| `binary_sensor` | Alerta por granizo | ¿Algún aviso vigente menciona caída de granizo? | 10-30 min |
 | `binary_sensor` | Alerta a corto plazo | **¿Tu ubicación exacta está dentro de una zona de alerta activa ahora?** | 10 min |
 | `sensor` | Pronóstico de corto plazo | Resumen en una frase de la situación de corto plazo | 10 min |
 | `sensor` | Avisos por provincia (país) | Avisos activos en todo el país, agrupados por provincia | 10 min |
-| `camera` | Radar | Mapa con radar de precipitación + zonas de alerta dibujadas | 10 min |
+| `camera` | Radar | Foto con radar de precipitación + zona de alerta + clima actual y próximas horas | 10 min |
 
 ### `weather`: clima actual y pronóstico
 
@@ -81,6 +82,20 @@ Uno por cada tipo de evento del sistema de alerta temprana del SMN
 > 1 (amarillo/naranja/rojo) para hoy; `off` (`Safe`) = sin alerta de ese
 tipo. "Alerta meteorológica" es el "resumen": `on` si cualquiera de los
 11 está activo.
+
+### `binary_sensor` "Alerta por granizo"
+
+El SMN **no tiene un tipo de evento propio para granizo** en su sistema
+de alertas (a diferencia de lluvia, viento, ceniza, polvo, etc., que sí
+son eventos con su propio id en `warning/alert/location/{id}`) —
+verificado contra un aviso real: la caída de granizo aparece únicamente
+como texto libre dentro del evento "Tormenta" (ej. "...ocasional
+granizo...") o en el título de un aviso a muy corto plazo (ej.
+"TORMENTAS FUERTES CON LLUVIAS INTENSAS Y OCASIONAL CAIDA DE GRANIZO").
+Este sensor busca la palabra "granizo" en esos dos textos. `on` = algún
+aviso activo la menciona ahora mismo. Atributos: `match_count` y
+`matching_texts` con el/los textos que hicieron match, para ver el
+contexto exacto sin tener que ir a buscarlo en otro sensor.
 
 ### `binary_sensor` "Alerta a corto plazo": ¿estoy en zona de peligro?
 
@@ -137,15 +152,15 @@ de cada aviso agrupado por provincia. Es la misma entidad que alimenta
 los polígonos que dibuja la cámara de radar (ver abajo) — mismos datos,
 dos formas de verlos (texto vs. mapa).
 
-### `camera` "Radar": radar animado
+### `camera` "Radar": foto del radar + clima
 
 **No viene de SMN** — `mapa.smn.gob.ar` tiene su propio challenge de
 Cloudflare que no se pudo resolver de forma confiable (detalle en
 `addons/smn_proxy/README.md`), y el `robots.txt` del SMN pide
 explícitamente que agentes tipo Claude no accedan al sitio. En su lugar,
-esta cámara arma el GIF animado con tiles de precipitación de la
+esta cámara arma una foto (JPEG) con tiles de precipitación de la
 [API pública de RainViewer](https://www.rainviewer.com/api.html) (gratis
-para uso personal, sin API key, requiere solo atribución) compuestas sobre
+para uso personal, sin API key, requiere solo atribución) compuestos sobre
 un mapa base de [OpenStreetMap](https://www.openstreetmap.org/copyright)
 (tiles estándar, sin key, con `User-Agent` identificando el proyecto) —
 sin el mapa base, cuando no hay lluvia en la zona el radar es 100%
@@ -153,6 +168,17 @@ transparente y se ve como un cuadro en blanco, así que el mapa de fondo es
 necesario para que se vea "un mapa" y no "nada". Atribución de ambas
 fuentes incluida como `attribution` de la entidad. Solo cubre radar de
 precipitación, no imagen satelital (RainViewer no la ofrece).
+
+**Es una foto estática, no un GIF animado** (antes lo era). Se cambió
+porque la mayoría de integraciones de notificación de terceros que
+permiten adjuntar una `camera` (Telegram, bots de WhatsApp basados en
+Baileys, etc.) asumen que una cámara de Home Assistant entrega una foto
+fija, igual que el tipo de contenido por defecto de HA (`image/jpeg`) —
+un GIF animado se descartaba silenciosamente en varias de ellas. Como
+además la cobertura de RainViewer en Argentina es limitada (ver abajo),
+la animación rara vez mostraba movimiento real, así que una sola imagen
+con más información útil (temperatura, condición y pronóstico de las
+próximas horas, dibujados arriba de la imagen) es mejor trade-off.
 
 **Importante — cobertura de RainViewer en Argentina es limitada.** Se
 verificó que su red de radares tiene huecos notorios en el país: hubo
@@ -175,14 +201,14 @@ en `const.py`), cubriendo aproximadamente 300km alrededor de tu ubicación
 — suficiente para ver tu ciudad y alrededores con detalle, más avisos en
 zonas vecinas. Si querés más o menos zoom, se ajusta ahí.
 
-**Rendimiento**: armar la imagen implica ~25 tiles de mapa + los de radar
-de cada uno de los 6 frames — se piden todos en paralelo (no uno por uno),
-y el resultado se recalcula **en segundo plano cada 10 minutos**, no recién
-cuando alguien pide la imagen. Esto importa si pensás usar esta cámara
-para adjuntarla a una notificación (`camera_entity` en un servicio
-`notify`, o `camera.snapshot`): como ya está construida de antes, la
-respuesta es prácticamente instantánea en vez de tardar varios segundos y
-arriesgarse a un timeout del servicio de notificación.
+**Rendimiento**: armar la imagen implica ~25 tiles de mapa + los del radar
+— se piden todos en paralelo (no uno por uno), y el resultado se recalcula
+**en segundo plano cada 10 minutos**, no recién cuando alguien pide la
+imagen. Esto importa si pensás usar esta cámara para adjuntarla a una
+notificación (`camera_entity` en un servicio `notify`, o
+`camera.snapshot`): como ya está construida de antes, la respuesta es
+prácticamente instantánea en vez de tardar varios segundos y arriesgarse a
+un timeout del servicio de notificación.
 
 El pronóstico de 7 días ya viene incluido en la entidad `weather` — se ve
 en la pestaña "Pronóstico" de su diálogo de más información, o en

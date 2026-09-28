@@ -1,10 +1,18 @@
-"""Animated precipitation radar built from RainViewer's public tile API.
+"""Precipitation radar snapshot built from RainViewer's public tile API.
 
 Not sourced from SMN: see the note in const.py for why. This module fetches
-the last few radar frames as a small tile mosaic around a lat/lon and
-stitches them into an animated GIF, which a camera entity can then serve
-directly (browsers animate GIFs shown via <img>, which is how HA's camera
-proxy renders a still image today).
+the latest radar frame as a small tile mosaic around a lat/lon, composites
+SMN's own active alert zones on top, and adds a short weather/forecast
+caption — all baked into a single static JPEG.
+
+This used to build an animated GIF (several frames stitched together), but
+that broke attaching the camera as a message attachment in most
+notification integrations (Telegram, WhatsApp-via-Baileys, etc.), which
+assume a camera entity is a static photo the way HA's own default camera
+content type (JPEG) implies. RainViewer's Argentina coverage is thin enough
+that the animation rarely showed real movement anyway, so a static image
+with more useful info (temperature, condition, next-hours forecast) is a
+better trade.
 """
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ import io
 import logging
 import math
 import os
+from datetime import datetime
 from typing import Any
 
 import aiohttp
@@ -23,9 +32,9 @@ _FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf")
 from .const import (
     BASEMAP_TILE_URL_TEMPLATE,
     BASEMAP_USER_AGENT,
+    CONDITION_ID_MAP,
+    CONDITION_LABELS_ES,
     RADAR_COLOR_SCHEME,
-    RADAR_FRAME_COUNT,
-    RADAR_FRAME_DURATION_MS,
     RADAR_TILE_GRID,
     RADAR_TILE_SIZE,
     RADAR_ZOOM,
@@ -257,6 +266,108 @@ def _draw_alert_caption(frame: Any, alerts: list[dict[str, Any]]) -> None:
         )
 
 
+def _condition_label_es(weather: dict[str, Any] | None) -> str | None:
+    """Map an SMN weather condition dict to a short Spanish label.
+
+    Reuses CONDITION_ID_MAP (SMN id -> HA condition constant) and then
+    CONDITION_LABELS_ES (HA condition constant -> Spanish text) so this
+    stays consistent with the weather entity's own condition, without
+    depending on HA core's Lokalise-managed translations (unavailable to
+    a Pillow-drawn image anyway).
+    """
+    if not isinstance(weather, dict):
+        return None
+    ha_condition = CONDITION_ID_MAP.get(weather.get("id"))
+    if not ha_condition:
+        return None
+    return CONDITION_LABELS_ES.get(ha_condition)
+
+
+def _draw_forecast_panel(
+    frame: Any,
+    current_weather: dict[str, Any] | None,
+    hourly_forecast: list[dict[str, Any]] | None,
+) -> None:
+    """Draw a top banner with current temp/condition and the next few periods.
+
+    current_weather / hourly_forecast are coordinator.data's own fields
+    (already fetched for the weather entity and sensors) — this just
+    burns a summary of the same data into the radar image so it's useful
+    as a single self-contained snapshot, e.g. attached to a chat message.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    if not current_weather and not hourly_forecast:
+        return
+
+    try:
+        font_big = ImageFont.truetype(_FONT_PATH, size=22)
+        font_small = ImageFont.truetype(_FONT_PATH, size=15)
+    except OSError:
+        _LOGGER.warning("Bundled font not found at %s, falling back to default", _FONT_PATH)
+        try:
+            font_big = ImageFont.load_default(size=22)
+            font_small = ImageFont.load_default(size=15)
+        except TypeError:
+            font_big = font_small = ImageFont.load_default()
+
+    lines: list[str] = []
+
+    temperature = (current_weather or {}).get("temperature")
+    condition_label = _condition_label_es((current_weather or {}).get("weather"))
+    if temperature is not None:
+        header = f"{temperature:.0f}°C"
+        if condition_label:
+            header += f" · {condition_label}"
+        lines.append(header)
+    elif condition_label:
+        lines.append(condition_label)
+
+    now = datetime.now()
+    upcoming = []
+    for period in hourly_forecast or []:
+        period_dt = period.get("datetime")
+        if not period_dt:
+            continue
+        try:
+            parsed = datetime.fromisoformat(period_dt)
+        except ValueError:
+            continue
+        if parsed >= now:
+            upcoming.append((parsed, period))
+    upcoming.sort(key=lambda item: item[0])
+
+    forecast_parts = []
+    for parsed, period in upcoming[:4]:
+        temp = period.get("temperature")
+        rain_range = period.get("rain_prob_range") or []
+        rain = max(rain_range) if rain_range else None
+        part = parsed.strftime("%H:%M")
+        if temp is not None:
+            part += f" {temp:.0f}°"
+        if rain is not None:
+            part += f" {rain:.0f}% lluvia"
+        forecast_parts.append(part)
+    if forecast_parts:
+        lines.append("  ·  ".join(forecast_parts))
+
+    if not lines:
+        return
+
+    draw = ImageDraw.Draw(frame, "RGBA")
+    padding = 8
+    line_height_big = font_big.size + 4 if hasattr(font_big, "size") else 26
+    line_height_small = font_small.size + 4 if hasattr(font_small, "size") else 19
+    banner_height = line_height_big + (len(lines) - 1) * line_height_small + 2 * padding
+
+    draw.rectangle([(0, 0), (frame.width, banner_height)], fill=(0, 0, 0, 170))
+    y = padding
+    for i, line in enumerate(lines):
+        font = font_big if i == 0 else font_small
+        draw.text((padding, y), line, font=font, fill=(255, 255, 255, 255))
+        y += line_height_big if i == 0 else line_height_small
+
+
 async def _fetch_frame_paths(session: aiohttp.ClientSession) -> tuple[str, list[str]]:
     """Return (tile_host, [frame_path, ...]) for the most recent frames."""
     async with async_timeout.timeout(10):
@@ -266,7 +377,7 @@ async def _fetch_frame_paths(session: aiohttp.ClientSession) -> tuple[str, list[
 
     host = data["host"]
     past = data.get("radar", {}).get("past", [])
-    frames = [f["path"] for f in past[-RADAR_FRAME_COUNT:]]
+    frames = [f["path"] for f in past[-1:]]
     return host, frames
 
 
@@ -404,13 +515,19 @@ async def _fetch_radar_layer(
     return cropped.resize((target_size, target_size), Image.NEAREST)
 
 
-async def build_animated_radar_gif(
+async def build_radar_snapshot_jpeg(
     session: aiohttp.ClientSession,
     latitude: float,
     longitude: float,
     alerts: list[dict[str, Any]] | None = None,
+    current_weather: dict[str, Any] | None = None,
+    hourly_forecast: list[dict[str, Any]] | None = None,
 ) -> bytes | None:
-    """Build an animated GIF of the last few radar frames around lat/lon.
+    """Build a single static JPEG: basemap + latest radar frame + overlays.
+
+    A static JPEG (not an animated GIF) so it works as a message attachment
+    in third-party notification integrations that assume a camera entity is
+    a plain photo — see this module's docstring.
 
     `alerts` should be the *nationwide* avisos a muy corto plazo list (SMN's
     own, with their "geometry" field) — not the per-location one. This
@@ -420,6 +537,9 @@ async def build_animated_radar_gif(
     affected zone without its exact coordinate falling inside the drawn
     polygon, leaving the per-location list empty even when the map clearly
     shows an active alert nearby.
+
+    `current_weather` / `hourly_forecast` are coordinator.data's own fields,
+    burned into a caption banner so the image is useful standalone.
     """
     try:
         host, frame_paths = await _fetch_frame_paths(session)
@@ -431,44 +551,18 @@ async def build_animated_radar_gif(
 
     basemap = await _fetch_basemap_mosaic(session, center_x, center_y)
 
-    frames = []
+    frame = basemap.copy()
     if host and frame_paths:
-        # All frames' tiles fetched concurrently too, not one frame at a
-        # time — otherwise total time is (tiles-per-frame × frame_count)
-        # sequential round-trips, easily blowing past a notification
-        # service's snapshot timeout.
-        layers = await asyncio.gather(
-            *(
-                _fetch_radar_layer(session, host, frame_path, center_x, center_y)
-                for frame_path in frame_paths
-            )
-        )
-        for layer in layers:
-            frame = basemap.copy()
-            frame.alpha_composite(layer)
-            frames.append(frame)
-    else:
-        # No radar frames (RainViewer unavailable) — still show the basemap
-        # plus alert polygons, a single still frame beats nothing.
-        frames.append(basemap.copy())
+        layer = await _fetch_radar_layer(session, host, frame_paths[-1], center_x, center_y)
+        frame.alpha_composite(layer)
 
     visible_alerts = filter_alerts_in_view(alerts, center_x, center_y) if alerts else []
     if visible_alerts:
-        for frame in frames:
-            _draw_alert_polygons(frame, visible_alerts, center_x, center_y)
-            _draw_alert_caption(frame, visible_alerts)
+        _draw_alert_polygons(frame, visible_alerts, center_x, center_y)
+        _draw_alert_caption(frame, visible_alerts)
 
-    if not frames:
-        return None
+    _draw_forecast_panel(frame, current_weather, hourly_forecast)
 
     buffer = io.BytesIO()
-    frames[0].save(
-        buffer,
-        format="GIF",
-        save_all=True,
-        append_images=frames[1:],
-        duration=RADAR_FRAME_DURATION_MS,
-        loop=0,
-        disposal=2,
-    )
+    frame.convert("RGB").save(buffer, format="JPEG", quality=85)
     return buffer.getvalue()

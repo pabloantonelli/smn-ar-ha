@@ -94,6 +94,9 @@
       },
       "short_term_alert": {
         "name": "Alerta a corto plazo"
+      },
+      "hail_alert": {
+        "name": "Alerta por granizo"
       }
     },
     "camera": {

@@ -49,6 +49,11 @@ async def async_setup_entry(
     # Short-term alert sensor
     entities.append(SMNShortTermAlertSensor(coordinator, config_entry))
 
+    # Hail: SMN has no dedicated event id for it (unlike rain/dust/ash/etc.),
+    # so this is derived by text-matching "granizo" instead — see
+    # SMNHailAlertSensor's docstring.
+    entities.append(SMNHailAlertSensor(coordinator, config_entry))
+
     async_add_entities(entities)
 
 
@@ -420,4 +425,98 @@ class SMNShortTermAlertSensor(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinato
                 }
                 for alert in alerts
             ],
+        }
+
+
+_HAIL_KEYWORD = "granizo"
+_HAIL_TORMENTA_EVENT_ID = 41  # ALERT_EVENT_MAP[41] == "tormenta"
+
+
+class SMNHailAlertSensor(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], BinarySensorEntity):
+    """Binary sensor for hail ("granizo"), derived by text matching.
+
+    Unlike rain/wind/dust/ash/etc., SMN's warning/alert API has no
+    dedicated event id for hail (verified against live data on an active
+    severe-thunderstorm day: hail is only ever mentioned inside the
+    "tormenta" event's (id 41) level description, e.g. "...ocasional
+    granizo...", or in a warning/shortterm alert's free-text title, e.g.
+    "TORMENTAS FUERTES CON LLUVIAS INTENSAS Y OCASIONAL CAIDA DE
+    GRANIZO."). So this sensor checks both of those texts for the word
+    "granizo" instead of following the id-based pattern used by
+    SMNEventAlertSensor.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.SAFETY
+    _attr_has_entity_name = True
+    _attr_translation_key = "hail_alert"
+    _attr_icon = "mdi:weather-hail"
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{config_entry.entry_id}_hail_alert"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    def _matching_texts(self) -> list[str]:
+        """Return every source text that mentions "granizo" right now."""
+        matches: list[str] = []
+
+        for alert in self.coordinator.data.shortterm_alerts or []:
+            title = alert.get("title") or ""
+            if _HAIL_KEYWORD in title.lower():
+                matches.append(title.strip())
+
+        alerts_data = self.coordinator.data.alerts or {}
+        warnings = alerts_data.get("warnings") or []
+        reports = alerts_data.get("reports") or []
+        if warnings:
+            events = warnings[0].get("events", [])
+            active_level = next(
+                (
+                    event.get("max_level", 1)
+                    for event in events
+                    if event.get("id") == _HAIL_TORMENTA_EVENT_ID
+                    and event.get("max_level", 1) > 1
+                ),
+                None,
+            )
+            if active_level:
+                for report in reports:
+                    if report.get("event_id") != _HAIL_TORMENTA_EVENT_ID:
+                        continue
+                    for level_data in report.get("levels", []):
+                        if level_data.get("level") != active_level:
+                            continue
+                        description = level_data.get("description") or ""
+                        if _HAIL_KEYWORD in description.lower():
+                            matches.append(description.strip())
+
+        return matches
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if any active alert mentions hail."""
+        return bool(self._matching_texts())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional state attributes."""
+        matches = self._matching_texts()
+        return {
+            "match_count": len(matches),
+            "matching_texts": matches,
         }
