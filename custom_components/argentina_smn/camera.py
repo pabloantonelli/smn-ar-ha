@@ -12,9 +12,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import RADAR_UPDATE_INTERVAL, RAINVIEWER_ATTRIBUTION
+from .const import DOMAIN, RADAR_UPDATE_INTERVAL, RAINVIEWER_ATTRIBUTION
 from .radar import build_animated_radar_gif
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,6 +55,16 @@ class SMNRadarCamera(Camera):
         self._longitude = longitude
         self._cached_gif: bytes | None = None
         self._cached_at: float = 0.0
+        self._config_entry = config_entry
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
