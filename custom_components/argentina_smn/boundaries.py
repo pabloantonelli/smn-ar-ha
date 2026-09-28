@@ -90,7 +90,7 @@ def draw_province_outline(
     deg2pixel: Any,
     origin_x: float,
     origin_y: float,
-    color: tuple[int, int, int, int] = (255, 45, 85, 235),
+    color: tuple[int, int, int, int] = (205, 210, 215, 235),
     width: int = 2,
 ) -> None:
     """Draw a province's outline on `frame`, given a lon/lat -> world-pixel function.
@@ -100,12 +100,12 @@ def draw_province_outline(
     (Web Mercator world pixels minus the mosaic's own top-left corner), so
     this overlay lines up with whatever imagery is already on `frame`.
 
-    Default is a thin pink/red line with a dark halo underneath: a plain
-    light line (the original choice) disappeared against cloud cover,
-    which is most of what these images show — pink/red is a color GOES
-    imagery itself never produces (land/ocean/cloud are all
-    white/blue/green/brown), so it stays visible over any of them, and the
-    halo keeps it visible on bright cloud without needing a heavier line.
+    Default is a light neutral gray line with a dark halo underneath. An
+    earlier plain-white version disappeared against cloud cover, and a
+    bright pink/red version worked but read as too loud/"primary" next to
+    the darkened-outside overlay (draw_region_overlay), which already does
+    most of the work of making the area stand out — the halo is what keeps
+    a *gray* line visible on bright cloud without needing a louder color.
     """
     from PIL import ImageDraw
 

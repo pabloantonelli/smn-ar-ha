@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -44,20 +45,24 @@ _FRAME_INTERVAL = timedelta(minutes=10)
 _MAX_LOOKBACK_SLOTS = 12  # up to 2h back before giving up on finding a frame
 
 
-def _layer_for(is_daytime: bool) -> tuple[str, str]:
-    """Return (layer, matrix_set) — GeoColor by day, clean IR by night.
+def _layer_for(is_daytime: bool, force_infrared: bool = False) -> tuple[str, str]:
+    """Return (layer, matrix_set) — GeoColor by day, clean IR by night (or always, if forced).
 
     GeoColor is true-color imagery, so it's just a black frame after dark.
     Band13 clean infrared shows cloud-top temperature instead, which works
-    the same day or night.
+    the same day or night — `force_infrared` is for a camera that always
+    wants that view (e.g. to see storm-top structure that reads better in
+    IR than in daylight GeoColor), not just as the night fallback.
     """
-    if is_daytime:
-        return GIBS_LAYER_GEOCOLOR, GIBS_MATRIX_SET_GEOCOLOR
-    return GIBS_LAYER_INFRARED, GIBS_MATRIX_SET_INFRARED
+    if force_infrared or not is_daytime:
+        return GIBS_LAYER_INFRARED, GIBS_MATRIX_SET_INFRARED
+    return GIBS_LAYER_GEOCOLOR, GIBS_MATRIX_SET_GEOCOLOR
 
 
-def _max_zoom_for(is_daytime: bool) -> int:
-    return GIBS_MAX_ZOOM_GEOCOLOR if is_daytime else GIBS_MAX_ZOOM_INFRARED
+def _max_zoom_for(is_daytime: bool, force_infrared: bool = False) -> int:
+    if force_infrared or not is_daytime:
+        return GIBS_MAX_ZOOM_INFRARED
+    return GIBS_MAX_ZOOM_GEOCOLOR
 
 
 def _zoom_for_bbox(
@@ -306,6 +311,106 @@ def _draw_motion_arrow(frame: Any, vector: tuple[float, float]) -> None:
         draw.line([(x1, y1), (hx, hy)], fill=(255, 220, 40, 255), width=4)
 
 
+# Argentina doesn't observe DST, so a fixed UTC-3 offset is always correct
+# (unlike using the host's local time, which may not even be Argentina's).
+_ARG_UTC_OFFSET = timedelta(hours=-3)
+_CAPTION_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf")
+
+
+def _format_frame_caption(when: datetime) -> str:
+    """Format a frame's timestamp as "HH:MM · hace N min" (Argentina local time).
+
+    The "hace N min" part is what a still image otherwise can't convey —
+    GIBS' publish lag means "the latest frame" can be anywhere from ~10 to
+    ~40 min old, and for an animation it's what turns a strip of frames
+    into an actual timeline (same idea as Windy's scrubber labels).
+    """
+    local = when + _ARG_UTC_OFFSET
+    minutes_ago = max(0, int((datetime.now(timezone.utc) - when).total_seconds() // 60))
+    if minutes_ago == 0:
+        relative = "recién"
+    elif minutes_ago == 1:
+        relative = "hace 1 min"
+    else:
+        relative = f"hace {minutes_ago} min"
+    return f"{local.strftime('%H:%M')} · {relative}"
+
+
+def _draw_caption(frame: Any, text: str) -> None:
+    """Draw a small timestamp banner in the bottom-left corner."""
+    from PIL import ImageDraw, ImageFont
+
+    try:
+        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=15)
+    except OSError:
+        try:
+            font = ImageFont.load_default(size=15)
+        except TypeError:
+            font = ImageFont.load_default()
+
+    draw = ImageDraw.Draw(frame, "RGBA")
+    padding = 6
+    text_width = draw.textlength(text, font=font)
+    line_height = font.size + 6 if hasattr(font, "size") else 21
+    draw.rectangle(
+        [(0, frame.height - line_height), (text_width + 2 * padding, frame.height)],
+        fill=(0, 0, 0, 165),
+    )
+    draw.text(
+        (padding, frame.height - line_height + 3), text, font=font, fill=(255, 255, 255, 255)
+    )
+
+
+_IR_LEGEND_STEPS = [
+    ((60, 60, 65, 235), "Nubes altas"),
+    ((40, 180, 220, 235), "Frío"),
+    ((60, 210, 90, 235), "Más frío"),
+    ((235, 220, 40, 235), "Muy frío"),
+    ((235, 50, 40, 235), "Tormenta severa"),
+]
+
+
+def _draw_ir_legend(frame: Any) -> None:
+    """Draw a small qualitative legend for the infrared color palette.
+
+    GIBS' Band13 Clean Infrared tiles come pre-colored (not raw grayscale
+    temperature data this code controls), and NASA doesn't publish the
+    exact color-to-Kelvin breakpoints for this specific rendering — so
+    this is a qualitative "what the colors mean" key (colder cloud tops
+    read as more severe), not a precise numeric scale like a Kelvin bar
+    would imply. Good enough to make the palette legible without
+    overstating precision this code can't verify.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    try:
+        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=13)
+    except OSError:
+        try:
+            font = ImageFont.load_default(size=13)
+        except TypeError:
+            font = ImageFont.load_default()
+
+    draw = ImageDraw.Draw(frame, "RGBA")
+    swatch = 14
+    row_height = swatch + 6
+    padding = 8
+    label_widths = [draw.textlength(label, font=font) for _, label in _IR_LEGEND_STEPS]
+    box_width = swatch + 8 + max(label_widths) + 2 * padding
+    box_height = len(_IR_LEGEND_STEPS) * row_height + padding
+
+    x0, y0 = frame.width - box_width, 0
+    draw.rectangle([(x0, y0), (frame.width, y0 + box_height)], fill=(0, 0, 0, 150))
+    for i, (color, label) in enumerate(_IR_LEGEND_STEPS):
+        row_y = y0 + padding // 2 + i * row_height
+        draw.rectangle(
+            [(x0 + padding, row_y), (x0 + padding + swatch, row_y + swatch)], fill=color
+        )
+        draw.text(
+            (x0 + padding + swatch + 8, row_y - 1), label, font=font, fill=(255, 255, 255, 255)
+        )
+
+
 def _draw_outline(frame: Any, center_x: int, center_y: int) -> None:
     """Draw Argentina's national outline as a light location-context reference.
 
@@ -337,15 +442,18 @@ async def build_satellite_snapshot_jpeg(
     longitude: float,
     is_daytime: bool,
     with_motion_arrow: bool = True,
+    force_infrared: bool = False,
 ) -> bytes | None:
     """Build a single static JPEG: latest GIBS satellite frame for the area.
 
     When `with_motion_arrow` is set, also fetches the previous frame (one
     extra mosaic fetch) purely to estimate and draw a drift arrow — see
     _estimate_motion_vector's docstring for what that vector does and
-    doesn't mean.
+    doesn't mean. `force_infrared` always uses Band13 clean IR instead of
+    the day/night-dependent default — for a camera that wants that view
+    specifically, not just as the night fallback.
     """
-    layer, matrix_set = _layer_for(is_daytime)
+    layer, matrix_set = _layer_for(is_daytime, force_infrared)
     center_x, center_y = _deg2tile(latitude, longitude, SATELLITE_ZOOM)
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
     if latest_time is None:
@@ -365,6 +473,9 @@ async def build_satellite_snapshot_jpeg(
             _draw_motion_arrow(frame, vector)
 
     _draw_outline(frame, center_x, center_y)
+    if layer == GIBS_LAYER_INFRARED:
+        _draw_ir_legend(frame)
+    _draw_caption(frame, _format_frame_caption(resolved_time))
 
     buffer = io.BytesIO()
     frame.convert("RGB").save(buffer, format="JPEG", quality=85)
@@ -398,10 +509,11 @@ async def build_satellite_animation_gif(
     # A frame with any missing tile is dropped rather than shown with black
     # holes in it — see _fetch_mosaic's docstring. Occasionally losing one
     # of SATELLITE_ANIMATION_FRAMES beats a visibly broken animation.
-    kept = [mosaic for mosaic, complete in results if complete]
-    for mosaic in kept:
+    kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
+    for mosaic, when in kept:
         _draw_outline(mosaic, center_x, center_y)
-    frames = [mosaic.convert("RGB") for mosaic in kept]
+        _draw_caption(mosaic, _format_frame_caption(when))
+    frames = [mosaic.convert("RGB") for mosaic, _when in kept]
     if not frames:
         return None
 
@@ -459,16 +571,47 @@ async def _fetch_region_mosaic(
     return mosaic, complete
 
 
+async def _fetch_complete_region_mosaic(
+    session: aiohttp.ClientSession,
+    layer: str,
+    matrix_set: str,
+    start_time: datetime,
+    zoom: int,
+    center_x: int,
+    center_y: int,
+    max_attempts: int = 4,
+):
+    """Same fallback as _fetch_complete_mosaic, for the region (country/province) grid."""
+    mosaic, complete, when = None, False, start_time
+    for i in range(max_attempts):
+        when = start_time - i * _FRAME_INTERVAL
+        mosaic, complete = await _fetch_region_mosaic(
+            session, layer, matrix_set, when, zoom, center_x, center_y
+        )
+        if complete:
+            return mosaic, when
+    _LOGGER.debug(
+        "No complete GIBS region mosaic found for %s within %d attempts before %s, using partial frame",
+        layer, max_attempts, start_time,
+    )
+    return mosaic, when
+
+
 def _region_center_and_zoom(
-    rings: list[list[tuple[float, float]]], is_daytime: bool, fill_factor: float
+    rings: list[list[tuple[float, float]]], is_daytime: bool
 ) -> tuple[str, str, int, int, int, int, int]:
-    """Resolve (layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y) for `rings`."""
+    """Resolve (layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y) for `rings`.
+
+    Always uses the same 0.9 fit margin — GIBS' own tile resolution caps
+    out at GIBS_MAX_ZOOM_GEOCOLOR/INFRARED (7/6), which a small-ish
+    province typically already hits well before any fill_factor matters;
+    going tighter than the data's native resolution has to happen as a
+    post-fetch digital crop instead — see _apply_extra_zoom.
+    """
     layer, matrix_set = _layer_for(is_daytime)
     max_zoom = _max_zoom_for(is_daytime)
     min_lat, min_lon, max_lat, max_lon = get_bbox(rings)
-    zoom = _zoom_for_bbox(
-        min_lat, min_lon, max_lat, max_lon, SATELLITE_REGION_TILE_GRID, max_zoom, fill_factor
-    )
+    zoom = _zoom_for_bbox(min_lat, min_lon, max_lat, max_lon, SATELLITE_REGION_TILE_GRID, max_zoom)
     center_lat = (min_lat + max_lat) / 2
     center_lon = (min_lon + max_lon) / 2
     center_x, center_y = _deg2tile(center_lat, center_lon, zoom)
@@ -476,6 +619,27 @@ def _region_center_and_zoom(
     origin_x = (center_x - half) * SATELLITE_TILE_SIZE
     origin_y = (center_y - half) * SATELLITE_TILE_SIZE
     return layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y
+
+
+def _apply_extra_zoom(frame: Any, extra_zoom: float) -> Any:
+    """Crop the frame tighter around its own center and scale back up ("digital zoom").
+
+    GIBS' tile resolution has a hard ceiling (_max_zoom_for) that a
+    smallish province's bounding box often already reaches at a
+    comfortable margin — there's no finer real tile data to request past
+    that, so `extra_zoom` (>1) crops in on already-fetched pixels instead
+    and upscales, trading a bit of sharpness for a visibly closer view.
+    `extra_zoom` <= 1 is a no-op.
+    """
+    if extra_zoom <= 1:
+        return frame
+    from PIL import Image
+
+    width, height = frame.size
+    crop_w, crop_h = width / extra_zoom, height / extra_zoom
+    cx, cy = width / 2, height / 2
+    box = (cx - crop_w / 2, cy - crop_h / 2, cx + crop_w / 2, cy + crop_h / 2)
+    return frame.crop(box).resize((width, height), Image.LANCZOS)
 
 
 async def build_region_snapshot_jpeg(
@@ -491,13 +655,15 @@ async def build_region_snapshot_jpeg(
     whole area fits the frame — this is what lets a dedicated "Córdoba" or
     "Argentina" camera actually show the full province/country, which
     isn't possible at the local camera's fixed street-level-ish zoom.
-    `fill_factor` controls how tight that fit is — see _zoom_for_bbox.
-    Its own outline is drawn on top (see boundaries.draw_province_outline).
+    `fill_factor` > 1 crops in tighter than GIBS' native tile resolution
+    allows and scales back up ("digital zoom" — see _apply_extra_zoom);
+    <= 1 is a no-op. Its own outline is drawn on top (see
+    boundaries.draw_region_overlay).
     """
     if not rings:
         return None
     layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
-        rings, is_daytime, fill_factor
+        rings, is_daytime
     )
 
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
@@ -505,12 +671,14 @@ async def build_region_snapshot_jpeg(
         _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
         return None
 
-    mosaic, _complete = await _fetch_region_mosaic(
+    mosaic, resolved_time = await _fetch_complete_region_mosaic(
         session, layer, matrix_set, latest_time, zoom, center_x, center_y
     )
     draw_region_overlay(
         mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
     )
+    mosaic = _apply_extra_zoom(mosaic, fill_factor)
+    _draw_caption(mosaic, _format_frame_caption(resolved_time))
 
     buffer = io.BytesIO()
     mosaic.convert("RGB").save(buffer, format="JPEG", quality=85)
@@ -532,7 +700,7 @@ async def build_region_animation_gif(
     if not rings:
         return None
     layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
-        rings, is_daytime, fill_factor
+        rings, is_daytime
     )
 
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
@@ -547,12 +715,16 @@ async def build_region_animation_gif(
             for when in times
         )
     )
-    kept = [mosaic for mosaic, complete in results if complete]
-    for mosaic in kept:
+    kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
+    zoomed: list[Any] = []
+    for mosaic, when in kept:
         draw_region_overlay(
             mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
         )
-    frames = [mosaic.convert("RGB") for mosaic in kept]
+        mosaic = _apply_extra_zoom(mosaic, fill_factor)
+        _draw_caption(mosaic, _format_frame_caption(when))
+        zoomed.append(mosaic)
+    frames = [mosaic.convert("RGB") for mosaic in zoomed]
     if not frames:
         return None
 

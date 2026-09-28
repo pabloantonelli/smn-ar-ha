@@ -144,7 +144,7 @@ SATELLITE_REGION_UPDATE_INTERVAL: Final = 900  # 15 min
 # province's bbox exceed the tile grid (cropping corners a bit) for a
 # noticeably closer zoom than the default fit (country camera keeps the
 # default 0.9, since Argentina's elongated shape already fills the frame).
-SATELLITE_PROVINCE_FILL_FACTOR: Final = 1.35
+SATELLITE_PROVINCE_FILL_FACTOR: Final = 2.2
 SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL: Final = 1800  # 30 min: N frames × N tiles, pricier still
 
 # Default onboarding locations (Buenos Aires)

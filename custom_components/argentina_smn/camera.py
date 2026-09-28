@@ -61,6 +61,9 @@ async def async_setup_entry(
         [
             SMNRadarCamera(coordinator, config_entry, name, latitude, longitude),
             SMNSatelliteCamera(coordinator, config_entry, name, latitude, longitude),
+            SMNSatelliteCamera(
+                coordinator, config_entry, name, latitude, longitude, force_infrared=True
+            ),
             SMNSatelliteAnimationCamera(
                 coordinator, config_entry, name, latitude, longitude
             ),
@@ -201,7 +204,10 @@ class SMNSatelliteCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], C
 
     Static JPEG for the same attachment-compatibility reason as the radar
     camera — see SMNRadarCamera's docstring. GeoColor by day, clean
-    infrared by night (see satellite.py's _layer_for).
+    infrared by night (see satellite.py's _layer_for) — unless
+    `force_infrared` is set, which pins it to infrared always (used for
+    the separate "Satélite Infrarrojo" entity, so IR is available as its
+    own view rather than only as the automatic night fallback).
     """
 
     _attr_has_entity_name = True
@@ -215,12 +221,18 @@ class SMNSatelliteCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], C
         name: str,
         latitude: float,
         longitude: float,
+        force_infrared: bool = False,
     ) -> None:
         super().__init__(coordinator)
         Camera.__init__(self)
         self.content_type = "image/jpeg"
-        self._attr_unique_id = f"{config_entry.entry_id}_satellite"
-        self._attr_name = f"{name} Satélite"
+        self._force_infrared = force_infrared
+        suffix = "_satellite_infrared" if force_infrared else "_satellite"
+        label = "Satélite Infrarrojo" if force_infrared else "Satélite"
+        if force_infrared:
+            self._attr_translation_key = "satellite_infrared"
+        self._attr_unique_id = f"{config_entry.entry_id}{suffix}"
+        self._attr_name = f"{name} {label}"
         self._latitude = latitude
         self._longitude = longitude
         self._cached_image: bytes | None = None
@@ -259,7 +271,11 @@ class SMNSatelliteCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], C
 
             session = async_get_clientsession(self.hass)
             image = await build_satellite_snapshot_jpeg(
-                session, self._latitude, self._longitude, is_up(self.hass)
+                session,
+                self._latitude,
+                self._longitude,
+                is_up(self.hass),
+                force_infrared=self._force_infrared,
             )
             if image:
                 self._cached_image = image

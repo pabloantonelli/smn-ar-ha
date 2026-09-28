@@ -117,6 +117,9 @@
       },
       "satellite_province_animation": {
         "name": "Satélite provincia (animado)"
+      },
+      "satellite_infrared": {
+        "name": "Satélite (infrarrojo)"
       }
     },
     "sensor": {
