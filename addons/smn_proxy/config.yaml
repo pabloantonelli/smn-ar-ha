@@ -1,0 +1,27 @@
+name: "SMN Proxy"
+version: "0.1.0"
+slug: "smn_proxy"
+description: >-
+  Resuelve el challenge de Cloudflare de smn.gob.ar con un navegador headless,
+  mantiene un JWT valido y expone un proxy local para la API/mapas del SMN,
+  usado por la integracion 'SMN - Servicio Meteorologico Nacional'.
+url: "https://github.com/pabloantonelli/smn-ar-ha"
+arch:
+  - amd64
+  - aarch64
+init: false
+startup: services
+boot: auto
+ports:
+  6942/tcp: 6942
+ports_description:
+  6942/tcp: "API del proxy SMN (uso interno de Home Assistant)"
+options:
+  cache_ttl_minutes: 15
+  token_refresh_minutes: 20
+  log_level: "info"
+schema:
+  cache_ttl_minutes: int(1,120)
+  token_refresh_minutes: int(5,60)
+  log_level: list(debug|info|warning|error)
+map: []
