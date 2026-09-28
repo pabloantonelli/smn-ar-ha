@@ -61,6 +61,58 @@ def _deg2pixel(lat: float, lon: float, zoom: int) -> tuple[float, float]:
     return px, py
 
 
+def _tile2deg(x: int, y: int, zoom: int) -> tuple[float, float]:
+    """Convert slippy-map tile x/y to the lat/lon of its NW corner."""
+    n = 2.0**zoom
+    lon = x / n * 360.0 - 180.0
+    lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
+    lat = math.degrees(lat_rad)
+    return lat, lon
+
+
+def _viewport_bounds(
+    center_x: int, center_y: int
+) -> tuple[float, float, float, float]:
+    """Return (min_lat, min_lon, max_lat, max_lon) currently visible on the mosaic."""
+    half = RADAR_TILE_GRID // 2
+    lat_nw, lon_nw = _tile2deg(center_x - half, center_y - half, RADAR_ZOOM)
+    lat_se, lon_se = _tile2deg(center_x + half + 1, center_y + half + 1, RADAR_ZOOM)
+    return min(lat_se, lat_nw), min(lon_nw, lon_se), max(lat_se, lat_nw), max(lon_nw, lon_se)
+
+
+def filter_alerts_in_view(
+    alerts: list[dict[str, Any]], center_x: int, center_y: int
+) -> list[dict[str, Any]]:
+    """Keep only alerts whose zone polygon overlaps the visible map area.
+
+    SMN's own per-location warning/shortterm filtering is a strict
+    point-in-polygon test against one exact coordinate, which is often
+    empty even when a relevant alert's zone clearly covers the map the
+    camera is showing (a station can be textually "in" an affected
+    province/city per the zones list without its exact point falling
+    inside the drawn polygon). Filtering by viewport overlap instead shows
+    anything actually visible on the map, which is what matters for a
+    picture — pass in the *nationwide* alerts list, not the per-location one.
+    """
+    min_lat, min_lon, max_lat, max_lon = _viewport_bounds(center_x, center_y)
+    visible = []
+    for alert in alerts:
+        coordinates = (alert.get("geometry") or {}).get("coordinates") or []
+        lats = [lat for ring in coordinates for _, lat in ring]
+        lons = [lon for ring in coordinates for lon, _ in ring]
+        if not lats or not lons:
+            continue
+        overlaps = (
+            min(lats) <= max_lat
+            and max(lats) >= min_lat
+            and min(lons) <= max_lon
+            and max(lons) >= min_lon
+        )
+        if overlaps:
+            visible.append(alert)
+    return visible
+
+
 def _draw_alert_polygons(
     frame: Any, alerts: list[dict[str, Any]], center_x: int, center_y: int
 ) -> None:
@@ -296,10 +348,14 @@ async def build_animated_radar_gif(
 ) -> bytes | None:
     """Build an animated GIF of the last few radar frames around lat/lon.
 
-    If `alerts` (SMN's own avisos a muy corto plazo, with their "geometry"
-    field) are given, their zone polygons are drawn on top of every frame —
-    see _draw_alert_polygons for why this is the most reliable part of the
-    image, independent of third-party radar coverage.
+    `alerts` should be the *nationwide* avisos a muy corto plazo list (SMN's
+    own, with their "geometry" field) — not the per-location one. This
+    function filters it down to whatever overlaps the visible map itself
+    (see filter_alerts_in_view), which is more useful here than SMN's
+    per-location exact-point filtering: a station can be textually "in" an
+    affected zone without its exact coordinate falling inside the drawn
+    polygon, leaving the per-location list empty even when the map clearly
+    shows an active alert nearby.
     """
     try:
         host, frame_paths = await _fetch_frame_paths(session)
@@ -323,10 +379,11 @@ async def build_animated_radar_gif(
         # plus alert polygons, a single still frame beats nothing.
         frames.append(basemap.copy())
 
-    if alerts:
+    visible_alerts = filter_alerts_in_view(alerts, center_x, center_y) if alerts else []
+    if visible_alerts:
         for frame in frames:
-            _draw_alert_polygons(frame, alerts, center_x, center_y)
-            _draw_alert_caption(frame, alerts)
+            _draw_alert_polygons(frame, visible_alerts, center_x, center_y)
+            _draw_alert_caption(frame, visible_alerts)
 
     if not frames:
         return None

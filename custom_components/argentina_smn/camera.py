@@ -93,7 +93,14 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
             return self._cached_gif
 
         session = async_get_clientsession(self.hass)
-        alerts = self.coordinator.data.shortterm_alerts if self.coordinator.data else []
+        # Nationwide list, not the per-location one: see build_animated_radar_gif's
+        # docstring for why (SMN's own per-location filter is stricter than
+        # what's actually visible on the map).
+        alerts = (
+            self.coordinator.data.nationwide_shortterm_alerts
+            if self.coordinator.data
+            else []
+        )
         try:
             gif = await build_animated_radar_gif(
                 session, self._latitude, self._longitude, alerts=alerts
