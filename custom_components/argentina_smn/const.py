@@ -61,7 +61,21 @@ API_GEOREF_PATH: Final = f"{API_PATH_PREFIX}/georef/location"
 # radar camera's attribution). It only covers precipitation radar, not
 # satellite imagery.
 RAINVIEWER_INDEX_URL: Final = "https://api.rainviewer.com/public/weather-maps.json"
-RAINVIEWER_ATTRIBUTION: Final = "Weather data by RainViewer (rainviewer.com)"
+# Basemap tiles so the radar mosaic shows a recognizable map underneath
+# instead of a blank square when there's no precipitation. CARTO's free
+# anonymous basemap CDN was retired (now requires an API key), so this uses
+# OpenStreetMap's standard tile server directly instead — no key needed,
+# but their usage policy requires a proper identifying User-Agent (set in
+# radar.py) and discourages heavy automated use. Volume here is low (9
+# tiles, only fetched lazily when the camera is actually viewed, cached
+# for RADAR_UPDATE_INTERVAL), consistent with light personal-project use.
+BASEMAP_TILE_URL_TEMPLATE: Final = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+BASEMAP_USER_AGENT: Final = (
+    "smn-ar-ha-radar/1.0 (+https://github.com/pabloantonelli/smn-ar-ha)"
+)
+RAINVIEWER_ATTRIBUTION: Final = (
+    "Weather data by RainViewer (rainviewer.com) · Map © OpenStreetMap contributors"
+)
 RADAR_ZOOM: Final = 7
 RADAR_TILE_GRID: Final = 3  # 3x3 tiles around the configured location
 RADAR_TILE_SIZE: Final = 256

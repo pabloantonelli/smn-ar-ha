@@ -72,11 +72,16 @@ alerta, con esta prioridad:
 Cloudflare que no se pudo resolver de forma confiable (detalle en
 `addons/smn_proxy/README.md`), y el `robots.txt` del SMN pide
 explícitamente que agentes tipo Claude no accedan al sitio. En su lugar,
-esta cámara arma el GIF animado con tiles de la
+esta cámara arma el GIF animado con tiles de precipitación de la
 [API pública de RainViewer](https://www.rainviewer.com/api.html) (gratis
-para uso personal, sin API key, requiere solo atribución — ya incluida
-como `attribution` de la entidad). Solo cubre radar de precipitación, no
-imagen satelital (RainViewer no la ofrece).
+para uso personal, sin API key, requiere solo atribución) compuestas sobre
+un mapa base de [OpenStreetMap](https://www.openstreetmap.org/copyright)
+(tiles estándar, sin key, con `User-Agent` identificando el proyecto) —
+sin el mapa base, cuando no hay lluvia en la zona el radar es 100%
+transparente y se ve como un cuadro en blanco, así que el mapa de fondo es
+necesario para que se vea "un mapa" y no "nada". Atribución de ambas
+fuentes incluida como `attribution` de la entidad. Solo cubre radar de
+precipitación, no imagen satelital (RainViewer no la ofrece).
 
 El pronóstico de 7 días ya viene incluido en la entidad `weather` — se ve
 en la pestaña "Pronóstico" de su diálogo de más información, o en
