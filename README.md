@@ -42,17 +42,28 @@ qué la enciende/actualiza, y qué hay en sus atributos. Se ve directo en
 HA vía Ajustes → Dispositivos y Servicios → SMN → Documentación, o desde
 HACS al ver el repositorio (`render_readme: true`).
 
-| Entidad | Qué es | Actualiza cada |
-|---|---|---|
-| `weather.<ubicación>` | Clima actual + pronóstico de 7 días | 30 min |
-| `binary_sensor.<ubicación>_weather_alert` | ¿Hay alguna alerta por evento activa hoy? | 30 min |
-| `binary_sensor.<ubicación>_alert_<evento>` (×11) | Una por tipo de evento (tormenta, lluvia, nieve, viento, zonda, temp. altas/bajas, niebla, polvo, humo, ceniza volcánica) | 30 min |
-| `binary_sensor.<ubicación>_short_term_alert` | **¿Tu ubicación exacta está dentro de una zona de alerta activa ahora?** | 10 min |
-| `sensor.<ubicación>_short_term_summary` | Resumen en una frase de la situación de corto plazo | 10 min |
-| `sensor.<ubicación>_nationwide_avisos` | Avisos activos en todo el país, agrupados por provincia | 10 min |
-| `camera.<ubicación>_radar` | Mapa con radar de precipitación + zonas de alerta dibujadas | 10 min |
+**Sobre los nombres de entidad (`entity_id`)**: más abajo se listan por
+plataforma y nombre visible, no por `entity_id` exacto — Home Assistant
+genera el `entity_id` a partir del nombre traducido **en el momento en
+que la entidad se crea por primera vez**, y no lo vuelve a cambiar
+después aunque cambie el idioma. Según cuándo/con qué idioma activo
+instalaste la integración, puede terminar siendo
+`sensor.<algo>_short_term_forecast`, `sensor.<algo>_pronostico_de_corto_plazo`,
+etc. Para encontrar el `entity_id` real de cualquiera de estas: Ajustes →
+Herramientas de desarrollo → Estados, y filtrar por el nombre del
+dispositivo o una palabra del nombre visible (ej. "corto plazo").
 
-### `weather.<ubicación>`: clima actual y pronóstico
+| Plataforma | Nombre visible | Qué es | Actualiza cada |
+|---|---|---|---|
+| `weather` | (el nombre que le pusiste al configurar) | Clima actual + pronóstico de 7 días | 30 min |
+| `binary_sensor` | Alerta meteorológica | ¿Hay alguna alerta por evento activa hoy? | 30 min |
+| `binary_sensor` ×11 | Alerta por tormenta / lluvia / nieve / viento / viento zonda / altas y bajas temperaturas / niebla / polvo / humo / ceniza volcánica | Una por tipo de evento | 30 min |
+| `binary_sensor` | Alerta a corto plazo | **¿Tu ubicación exacta está dentro de una zona de alerta activa ahora?** | 10 min |
+| `sensor` | Pronóstico de corto plazo | Resumen en una frase de la situación de corto plazo | 10 min |
+| `sensor` | Avisos por provincia (país) | Avisos activos en todo el país, agrupados por provincia | 10 min |
+| `camera` | Radar | Mapa con radar de precipitación + zonas de alerta dibujadas | 10 min |
+
+### `weather`: clima actual y pronóstico
 
 La entidad de clima estándar de HA. `state`/atributos: temperatura,
 sensación térmica, humedad, presión, viento, visibilidad. Pestaña
@@ -63,15 +74,15 @@ lluvia. Es el mismo pronóstico que muestra `smn.gob.ar` — la API no
 ofrece nada "extendido" más allá de eso (se probaron endpoints
 candidatos como `forecast/week`/`tendency`, ninguno existe).
 
-### `binary_sensor.<ubicación>_alert_<evento>` (los 11 sensores por tipo)
+### `binary_sensor` "Alerta por `<evento>`" (los 11 sensores por tipo)
 
 Uno por cada tipo de evento del sistema de alerta temprana del SMN
 (`warning/alert/location/{id}`). `on` (`Unsafe`) = ese evento tiene nivel
 > 1 (amarillo/naranja/rojo) para hoy; `off` (`Safe`) = sin alerta de ese
-tipo. `binary_sensor.<ubicación>_weather_alert` es el "resumen": `on` si
-cualquiera de los 11 está activo.
+tipo. "Alerta meteorológica" es el "resumen": `on` si cualquiera de los
+11 está activo.
 
-### `binary_sensor.<ubicación>_short_term_alert`: ¿estoy en zona de peligro?
+### `binary_sensor` "Alerta a corto plazo": ¿estoy en zona de peligro?
 
 **Esta es la respuesta directa a "¿mi ubicación está dentro de algún
 polígono de alerta ahora mismo?"** Usa `warning/shortterm/location/{id}`,
@@ -81,18 +92,22 @@ contra la lat/lon exacta configurada — no es una aproximación nuestra.
 - `on` (`Unsafe`): tu ubicación está dentro de al menos un aviso a muy
   corto plazo vigente (tormenta/granizo/etc., validez 1-2h).
 - `off` (`Safe`): no lo está — aunque haya avisos activos en otras zonas
-  cercanas (para eso está `sensor.<ubicación>_nationwide_avisos`).
+  cercanas (para eso está "Avisos por provincia (país)", ver abajo).
 
 Atributos cuando está `on`: `alert_count`, y `alerts` con el detalle
 completo de cada aviso (título, vigencia, zonas, severidad, y
 `instructions` — las medidas de protección, tal cual las publica SMN).
 
-Usalo para automatizaciones tipo "avisame por notificación si
-`binary_sensor.<ubicación>_short_term_alert` pasa a `on`" — es la señal
-más precisa y específica a tu ubicación que expone esta integración.
+Usalo para automatizaciones tipo "avisame por notificación si la Alerta
+a corto plazo pasa a `on`" — es la señal más precisa y específica a tu
+ubicación que expone esta integración.
 
-### `sensor.<ubicación>_short_term_summary`: pronóstico de corto plazo en texto
+### `sensor` "Pronóstico de corto plazo": el aviso de SMN en texto
 
+Es exactamente el mismo texto que muestra el propio mapa de SMN al hacer
+clic en un aviso (ej. "TORMENTAS FUERTES CON LLUVIAS INTENSAS Y OCASIONAL
+CAIDA DE GRANIZO", con zonas y hora de validez) — el `state` es ese
+título, y el atributo `avisos_corto_plazo` trae el resto del detalle.
 Sintetiza en una frase (para leer directo en un dashboard, una
 notificación o un TTS) todo lo que ya exponen los binary_sensors de
 alerta, con esta prioridad:
@@ -111,7 +126,7 @@ alerta, con esta prioridad:
 4. Si no hay nada de lo anterior: un resumen del pronóstico de hoy
    (condición, máxima/mínima).
 
-### `sensor.<ubicación>_nationwide_avisos`: avisos en todo el país
+### `sensor` "Avisos por provincia (país)": avisos en todo el país
 
 A diferencia de todo lo anterior (específico a tu ubicación), este usa
 `warning/shortterm/` **sin** filtro de ubicación — los avisos a muy corto
@@ -119,10 +134,10 @@ plazo vigentes en cualquier parte de Argentina en este momento. `state`:
 cantidad total + provincias afectadas (ej. "3 avisos vigentes en
 Córdoba, Santa Fe"). Atributo `por_provincia`: diccionario con el detalle
 de cada aviso agrupado por provincia. Es la misma entidad que alimenta
-los polígonos que dibuja `camera.<ubicación>_radar` (ver abajo) — mismos
-datos, dos formas de verlos (texto vs. mapa).
+los polígonos que dibuja la cámara de radar (ver abajo) — mismos datos,
+dos formas de verlos (texto vs. mapa).
 
-### `camera.<ubicación>_radar`: radar animado
+### `camera` "Radar": radar animado
 
 **No viene de SMN** — `mapa.smn.gob.ar` tiene su propio challenge de
 Cloudflare que no se pudo resolver de forma confiable (detalle en
@@ -146,14 +161,14 @@ del propio SMN) que RainViewer no mostraba en absoluto. Por eso la cámara
 también dibuja, **siempre**, la zona de alerta activa (si hay alguna) como
 un polígono rojo con un ícono de tormenta y el texto del aviso (título +
 hora de validez) — usando el campo `geometry` de `warning/shortterm`, la
-misma data ya validada que usa `sensor.<ubicación>_short_term_summary`. A
-diferencia del radar de RainViewer, esto es 100% confiable para Argentina
-porque sale directo de la API del SMN, no de un agregador de terceros con
+misma data ya validada que usa "Pronóstico de corto plazo". A diferencia
+del radar de RainViewer, esto es 100% confiable para Argentina porque
+sale directo de la API del SMN, no de un agregador de terceros con
 cobertura pareja a nivel mundial pero floja en esta región. Los avisos
 dibujados son los que se superponen con el área visible del mapa (no
 solo los que caen exactamente sobre tu punto — usa la misma data que
-`sensor.<ubicación>_nationwide_avisos`), así que se ve cualquier zona de
-alerta cercana aunque tu ubicación puntual no esté dentro del polígono.
+"Avisos por provincia (país)"), así que se ve cualquier zona de alerta
+cercana aunque tu ubicación puntual no esté dentro del polígono.
 
 **Zoom**: la grilla es de 5×5 tiles a zoom 9 (`RADAR_ZOOM`/`RADAR_TILE_GRID`
 en `const.py`), cubriendo aproximadamente 300km alrededor de tu ubicación
