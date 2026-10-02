@@ -4,16 +4,6 @@ Integración de Home Assistant para el clima, pronóstico y alertas del
 [Servicio Meteorológico Nacional](https://www.smn.gob.ar) de Argentina, más
 un add-on que resuelve el acceso a su API no oficial.
 
-> **⚠️ Cambio importante (v3.0.0): el `domain` pasó de `argentina_smn` a
-> `smn_ar`.** Otro proyecto independiente (sin relación con este repo)
-> registró ese mismo `domain` e intentó sumarlo como integración *core* de
-> Home Assistant; para evitar que dos integraciones distintas choquen bajo
-> el mismo `domain` si alguien instala ambas, esta la renombró. Si ya
-> tenías la integración instalada: desinstalala (HACS → tres puntos →
-> Eliminar) y volvé a instalar/configurar desde cero — los `entity_id`
-> existentes (`weather.tu_nombre`, `sensor.tu_nombre_...`, etc.) no migran
-> solos al nuevo `domain`, hay que recrear la config entry.
-
 ## Por qué dos componentes
 
 `smn.gob.ar` no tiene una API pública. Su frontend consume una API JSON no
