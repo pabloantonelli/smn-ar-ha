@@ -65,6 +65,31 @@ def _max_zoom_for(is_daytime: bool, force_infrared: bool = False) -> int:
     return GIBS_MAX_ZOOM_GEOCOLOR
 
 
+_INFRARED_BLUR_RADIUS = 2.0
+
+
+def _smooth_if_infrared(mosaic: Any, layer: str) -> Any:
+    """Soften Band13 Clean Infrared's blocky native pixels with a light blur.
+
+    GIBS caps this layer at zoom 6 (one level coarser than GeoColor's 7),
+    and it's NASA's own pre-colored rendering, not raw data this code
+    controls — verified by inspecting an unprocessed 1:1 crop straight
+    from GIBS, which already shows hard-edged color blocks before this
+    code touches it. There's no finer real data to request (GIBS doesn't
+    publish a raw/uncolored Band13 product for GOES-East to recolor
+    smoothly ourselves instead). A small Gaussian blur can't invent detail
+    either, but it turns those hard block edges into something that reads
+    as soft cloud texture instead of a visibly pixelated mosaic — cosmetic
+    only, applied before any crop/zoom/overlay so it doesn't blur the
+    outline or UI chrome drawn on top.
+    """
+    if layer != GIBS_LAYER_INFRARED:
+        return mosaic
+    from PIL import ImageFilter
+
+    return mosaic.filter(ImageFilter.GaussianBlur(radius=_INFRARED_BLUR_RADIUS))
+
+
 def _zoom_for_bbox(
     min_lat: float,
     min_lon: float,
@@ -650,7 +675,7 @@ async def build_satellite_snapshot_jpeg(
     latest, resolved_time = await _fetch_complete_mosaic(
         session, layer, matrix_set, latest_time, center_x, center_y
     )
-    frame = latest.copy()
+    frame = _smooth_if_infrared(latest, layer)
 
     if with_motion_arrow:
         previous, _ = await _fetch_complete_mosaic(
@@ -709,7 +734,9 @@ async def build_satellite_animation_gif(
     # of SATELLITE_ANIMATION_FRAMES beats a visibly broken animation.
     kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
     total = len(kept)
+    smoothed: list[Any] = []
     for i, (mosaic, when) in enumerate(kept):
+        mosaic = _smooth_if_infrared(mosaic, layer)
         _draw_outline(mosaic, center_x, center_y)
         _draw_location_pin(
             mosaic,
@@ -722,7 +749,8 @@ async def build_satellite_animation_gif(
         if layer == GIBS_LAYER_INFRARED:
             _draw_ir_legend(mosaic)
         _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)
-    frames = [mosaic.convert("RGB") for mosaic, _when in kept]
+        smoothed.append(mosaic)
+    frames = [mosaic.convert("RGB") for mosaic in smoothed]
     if not frames:
         return None
 
@@ -952,6 +980,7 @@ async def build_region_snapshot_jpeg(
     mosaic, resolved_time = await _fetch_complete_region_mosaic(
         session, layer, matrix_set, latest_time, zoom, center_x, center_y
     )
+    mosaic = _smooth_if_infrared(mosaic, layer)
     deg2pixel = lambda lat, lon: _deg2pixel(lat, lon, zoom)  # noqa: E731
     draw_region_overlay(
         mosaic,
@@ -1015,6 +1044,7 @@ async def build_region_animation_gif(
     bbox = _rings_pixel_bbox(rings, deg2pixel, origin_x, origin_y)
     zoomed: list[Any] = []
     for i, (mosaic, when) in enumerate(kept):
+        mosaic = _smooth_if_infrared(mosaic, layer)
         draw_region_overlay(
             mosaic,
             rings,
