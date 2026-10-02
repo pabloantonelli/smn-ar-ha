@@ -34,7 +34,6 @@ from .const import (
     RADAR_UPDATE_INTERVAL,
     RAINVIEWER_ATTRIBUTION,
     SATELLITE_ANIMATION_UPDATE_INTERVAL,
-    SATELLITE_PROVINCE_FILL_FACTOR,
     SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL,
     SATELLITE_REGION_UPDATE_INTERVAL,
     SATELLITE_UPDATE_INTERVAL,
@@ -584,7 +583,6 @@ class SMNSatelliteProvinceCamera(_SMNSatelliteCameraBase):
             session,
             rings,
             is_up(self.hass),
-            fill_factor=SATELLITE_PROVINCE_FILL_FACTOR,
             force_infrared=self._force_infrared,
             pin=(self._latitude, self._longitude),
             current_weather=current_weather,
@@ -596,10 +594,8 @@ class SMNSatelliteProvinceAnimationCamera(_SMNSatelliteCameraBase):
     """Animated GIF (last hour) zoomed to fit the configured location's province.
 
     Same idea as SMNSatelliteAnimationCamera (shared as a URL, not meant
-    for attachment — see its docstring) but at the province's own
-    zoom-to-fit level instead of the fixed local zoom, and with the extra
-    SATELLITE_PROVINCE_FILL_FACTOR zoom bump the static province camera
-    also uses.
+    for attachment — see its docstring) but zoomed and cropped to fit the
+    province, instead of the fixed local zoom.
     """
 
     content_type = "image/gif"
@@ -655,7 +651,6 @@ class SMNSatelliteProvinceAnimationCamera(_SMNSatelliteCameraBase):
             session,
             rings,
             is_up(self.hass),
-            fill_factor=SATELLITE_PROVINCE_FILL_FACTOR,
             force_infrared=self._force_infrared,
             pin=(self._latitude, self._longitude),
             current_weather=current_weather,

@@ -801,9 +801,9 @@ def _region_center_and_zoom(
 
     Always uses the same 0.9 fit margin — GIBS' own tile resolution caps
     out at GIBS_MAX_ZOOM_GEOCOLOR/INFRARED (7/6), which a small-ish
-    province typically already hits well before any fill_factor matters;
-    going tighter than the data's native resolution has to happen as a
-    post-fetch digital crop instead — see _apply_extra_zoom.
+    province typically already hits well before this margin matters; going
+    tighter than the data's native resolution happens afterwards, as a
+    post-fetch crop to the shape's own bbox — see _center_on_shape.
     """
     layer, matrix_set = _layer_for(is_daytime, force_infrared)
     max_zoom = _max_zoom_for(is_daytime, force_infrared)
@@ -818,32 +818,69 @@ def _region_center_and_zoom(
     return layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y
 
 
-def _apply_extra_zoom(frame: Any, extra_zoom: float) -> Any:
-    """Crop the frame tighter around its own center and scale back up ("digital zoom").
+def _rings_pixel_bbox(
+    rings: list[list[tuple[float, float]]],
+    deg2pixel: Any,
+    origin_x: float,
+    origin_y: float,
+) -> tuple[float, float, float, float]:
+    """Pixel-space (x0, y0, x1, y1) bounding box of `rings` on the mosaic."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for ring in rings:
+        for lon, lat in ring:
+            px, py = deg2pixel(lat, lon)
+            xs.append(px - origin_x)
+            ys.append(py - origin_y)
+    return min(xs), min(ys), max(xs), max(ys)
 
-    GIBS' tile resolution has a hard ceiling (_max_zoom_for) that a
-    smallish province's bounding box often already reaches at a
-    comfortable margin — there's no finer real tile data to request past
-    that, so `extra_zoom` (>1) crops in on already-fetched pixels instead
-    and upscales, trading a bit of sharpness for a visibly closer view.
-    `extra_zoom` <= 1 is a no-op.
+
+def _center_on_shape(
+    frame: Any,
+    bbox: tuple[float, float, float, float],
+    margin_ratio: float = 0.08,
+) -> Any:
+    """Crop `frame` tightly around `bbox` (a shape's own pixel bbox) and
+    upscale back to the original frame size.
+
+    The tile grid used to fetch region mosaics is always square, but a
+    province's actual shape rarely is (Córdoba, for instance, is tall and
+    narrow) — fitting a square grid to a non-square shape leaves large
+    empty margins on whichever axis has slack, and the shape isn't
+    necessarily centered in them either. Cropping to the shape's own pixel
+    bbox (plus a small margin so the outline isn't flush against the edge)
+    and scaling back up fixes both at once: it's now centered by
+    definition, and fills the frame as much as the shape's own aspect
+    ratio allows — replaces the old uniform `_apply_extra_zoom` approach
+    for region cameras, which cropped a fixed ratio around the frame's
+    center regardless of the shape's actual footprint in it.
     """
-    if extra_zoom <= 1:
-        return frame
     from PIL import Image
 
-    width, height = frame.size
-    crop_w, crop_h = width / extra_zoom, height / extra_zoom
-    cx, cy = width / 2, height / 2
-    box = (cx - crop_w / 2, cy - crop_h / 2, cx + crop_w / 2, cy + crop_h / 2)
-    return frame.crop(box).resize((width, height), Image.LANCZOS)
+    x0, y0, x1, y1 = bbox
+    w, h = x1 - x0, y1 - y0
+    mx, my = w * margin_ratio, h * margin_ratio
+    x0, y0 = max(0, x0 - mx), max(0, y0 - my)
+    x1, y1 = min(frame.width, x1 + mx), min(frame.height, y1 + my)
+    if x1 <= x0 or y1 <= y0:
+        return frame
+    cropped = frame.crop((x0, y0, x1, y1))
+
+    # Scale back up so the output keeps roughly the same resolution
+    # (and every frame of an animation — same rings/zoom, so the same
+    # bbox — comes out at the same size), capped at 2x to avoid visibly
+    # upscaling a already-small crop into mush.
+    scale = min(2.0, frame.width / cropped.width, frame.height / cropped.height)
+    if scale <= 1.01:
+        return cropped
+    new_size = (round(cropped.width * scale), round(cropped.height * scale))
+    return cropped.resize(new_size, Image.LANCZOS)
 
 
 async def build_region_snapshot_jpeg(
     session: aiohttp.ClientSession,
     rings: list[list[tuple[float, float]]],
     is_daytime: bool,
-    fill_factor: float = 0.9,
     force_infrared: bool = False,
     pin: tuple[float, float] | None = None,
     current_weather: dict[str, Any] | None = None,
@@ -855,13 +892,16 @@ async def build_region_snapshot_jpeg(
     the zoom level here is computed from `rings`' own bounding box so the
     whole area fits the frame — this is what lets a dedicated "Córdoba" or
     "Argentina" camera actually show the full province/country, which
-    isn't possible at the local camera's fixed street-level-ish zoom.
-    `fill_factor` > 1 crops in tighter than GIBS' native tile resolution
-    allows and scales back up ("digital zoom" — see _apply_extra_zoom);
-    <= 1 is a no-op. Its own outline is drawn on top (see
-    boundaries.draw_region_overlay). `pin` is the configured location's
-    (latitude, longitude), marked with `current_weather`'s temperature —
-    left out (None) if the point wouldn't fall inside this frame anyway.
+    isn't possible at the local camera's fixed street-level-ish zoom. The
+    result is then cropped tightly to the shape's own pixel bbox and
+    centered (see _center_on_shape) — a province is rarely square, so
+    fitting it into a square tile grid otherwise leaves it off-center with
+    empty margins. Its own outline is drawn on top (see
+    boundaries.draw_region_overlay), with the area outside it darkened
+    heavily (not just dimmed) so the shape itself is unambiguously what
+    the camera is "about". `pin` is the configured location's (latitude,
+    longitude), marked with `current_weather`'s temperature — left out
+    (None) if the point wouldn't fall inside this frame anyway.
     `subdivisions` (optional) draws internal borders inside `rings` —
     departments for a province camera, provinces for the country camera.
     """
@@ -879,17 +919,20 @@ async def build_region_snapshot_jpeg(
     mosaic, resolved_time = await _fetch_complete_region_mosaic(
         session, layer, matrix_set, latest_time, zoom, center_x, center_y
     )
+    deg2pixel = lambda lat, lon: _deg2pixel(lat, lon, zoom)  # noqa: E731
     draw_region_overlay(
         mosaic,
         rings,
-        lambda lat, lon: _deg2pixel(lat, lon, zoom),
+        deg2pixel,
         origin_x,
         origin_y,
+        darken_alpha=220,
         subdivision_rings=subdivisions,
     )
     if pin:
         _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)
-    mosaic = _apply_extra_zoom(mosaic, fill_factor)
+    bbox = _rings_pixel_bbox(rings, deg2pixel, origin_x, origin_y)
+    mosaic = _center_on_shape(mosaic, bbox)
     if layer == GIBS_LAYER_INFRARED:
         _draw_ir_legend(mosaic)
     _draw_caption(mosaic, _format_frame_caption(resolved_time))
@@ -903,7 +946,6 @@ async def build_region_animation_gif(
     session: aiohttp.ClientSession,
     rings: list[list[tuple[float, float]]],
     is_daytime: bool,
-    fill_factor: float = 0.9,
     force_infrared: bool = False,
     pin: tuple[float, float] | None = None,
     current_weather: dict[str, Any] | None = None,
@@ -936,19 +978,22 @@ async def build_region_animation_gif(
     )
     kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
     total = len(kept)
+    deg2pixel = lambda lat, lon: _deg2pixel(lat, lon, zoom)  # noqa: E731
+    bbox = _rings_pixel_bbox(rings, deg2pixel, origin_x, origin_y)
     zoomed: list[Any] = []
     for i, (mosaic, when) in enumerate(kept):
         draw_region_overlay(
             mosaic,
             rings,
-            lambda lat, lon: _deg2pixel(lat, lon, zoom),
+            deg2pixel,
             origin_x,
             origin_y,
+            darken_alpha=220,
             subdivision_rings=subdivisions,
         )
         if pin:
             _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)
-        mosaic = _apply_extra_zoom(mosaic, fill_factor)
+        mosaic = _center_on_shape(mosaic, bbox)
         if layer == GIBS_LAYER_INFRARED:
             _draw_ir_legend(mosaic)
         _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)

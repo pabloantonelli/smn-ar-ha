@@ -17,7 +17,27 @@ better than a single method would).
 import json
 import os
 
-from shapely.geometry import shape
+from shapely.geometry import MultiPolygon, Polygon, shape
+
+
+def _polygons_only(geom):
+    """Keep only the polygonal parts of a geometry.
+
+    An intersection between two polygons can occasionally return a
+    GeometryCollection mixing slivers of LineString/Point with the actual
+    polygon(s) at shared-edge touches — only the polygons matter for
+    drawing a filled region's outline.
+    """
+    if isinstance(geom, (Polygon, MultiPolygon)):
+        return geom
+    if geom.geom_type == "GeometryCollection":
+        polys = [g for g in geom.geoms if isinstance(g, (Polygon, MultiPolygon))]
+        if not polys:
+            return geom
+        return polys[0] if len(polys) == 1 else MultiPolygon(
+            [p for poly in polys for p in (poly.geoms if isinstance(poly, MultiPolygon) else [poly])]
+        )
+    return geom
 
 _DATA_DIR = os.path.dirname(__file__)
 
@@ -91,11 +111,25 @@ for feat in adm2["features"]:
             unmatched.append(name)
             continue
 
+    # geoBoundaries simplifies ADM1 (provinces) and ADM2 (departments)
+    # independently, so their lines don't land on the exact same pixels —
+    # a department's real border can poke slightly outside our own
+    # province polygon's simplified edge. Clip every department to its own
+    # province's polygon so department lines never cross the province
+    # outline we actually draw — more important for visual consistency on
+    # a small satellite image than matching the department's literal
+    # official shape to the last meter.
+    clipped = _polygons_only(geom.intersection(province_by_name[province_name]))
+    if not clipped.is_empty:
+        geom = clipped
+
     # Department outlines are only ever drawn at a coarse zoom (same tile
     # grid as the province/country overlays, max GIBS zoom 6-7) — simplify
     # before bundling so the file (and the per-request draw cost) doesn't
-    # carry detail no camera image can actually show.
-    simplified = geom.simplify(0.01, preserve_topology=True)
+    # carry detail no camera image can actually show. A finer tolerance
+    # than before (0.003 vs 0.01) — the clipping above already removed the
+    # worst mismatches, this is just for file size/draw cost.
+    simplified = geom.simplify(0.003, preserve_topology=True)
     if simplified.is_empty:
         simplified = geom
     simple_geojson = json.loads(json.dumps(simplified.__geo_interface__))

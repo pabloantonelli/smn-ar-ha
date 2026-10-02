@@ -167,7 +167,7 @@ def draw_province_outline(
     deg2pixel: Any,
     origin_x: float,
     origin_y: float,
-    color: tuple[int, int, int, int] = (205, 210, 215, 235),
+    color: tuple[int, int, int, int] = (255, 191, 105, 225),
     width: int | None = None,
 ) -> None:
     """Draw a province's outline on `frame`, given a lon/lat -> world-pixel function.
@@ -177,12 +177,14 @@ def draw_province_outline(
     (Web Mercator world pixels minus the mosaic's own top-left corner), so
     this overlay lines up with whatever imagery is already on `frame`.
 
-    Default is a light neutral gray line with a dark halo underneath. An
-    earlier plain-white version disappeared against cloud cover, and a
-    bright pink/red version worked but read as too loud/"primary" next to
-    the darkened-outside overlay (draw_region_overlay), which already does
+    Default is a soft amber — distinct from both the white/gray clouds and
+    the thin gray dashed lines draw_subdivision_lines uses for
+    departments/provinces, so the two never read as the same kind of line.
+    Plain white/gray disappeared against cloud cover, and a saturated
+    pink/red worked but read as too loud/"primary" next to the
+    darkened-outside overlay (draw_region_overlay), which already does
     most of the work of making the area stand out — the halo is what keeps
-    a *gray* line visible on bright cloud without needing a louder color.
+    a *soft* color visible on bright cloud without needing a louder one.
     """
     from PIL import ImageDraw
 
@@ -201,8 +203,40 @@ def draw_province_outline(
             points.append((px - origin_x, py - origin_y))
         if len(points) >= 2:
             closed = points + [points[0]]
-            draw.line(closed, fill=(0, 0, 0, 140), width=width + 2)
+            draw.line(closed, fill=(0, 0, 0, 130), width=width + 2)
             draw.line(closed, fill=color, width=width)
+
+
+def _dashed_polyline(
+    draw: Any,
+    points: list[tuple[float, float]],
+    color: tuple[int, int, int, int],
+    width: int,
+    dash: float,
+    gap: float,
+) -> None:
+    """Draw `points` as a dashed line (PIL has no native dash support)."""
+    import math
+
+    remaining = dash
+    drawing = True
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        seg_len = math.hypot(x1 - x0, y1 - y0)
+        pos = 0.0
+        while pos < seg_len:
+            step = min(remaining, seg_len - pos)
+            if drawing and step > 0:
+                t0, t1 = pos / seg_len, (pos + step) / seg_len
+                draw.line(
+                    [(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0),
+                     (x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1)],
+                    fill=color, width=width,
+                )
+            pos += step
+            remaining -= step
+            if remaining <= 0:
+                drawing = not drawing
+                remaining = dash if drawing else gap
 
 
 def draw_subdivision_lines(
@@ -211,19 +245,22 @@ def draw_subdivision_lines(
     deg2pixel: Any,
     origin_x: float,
     origin_y: float,
-    color: tuple[int, int, int, int] = (190, 195, 200, 150),
+    color: tuple[int, int, int, int] = (235, 238, 240, 115),
 ) -> None:
     """Draw internal borders (departments within a province, provinces within
-    the country) — thinner and more subtle than draw_province_outline's main
-    boundary, so the main outline still reads as "this is the area" while
-    the subdivisions give geographic reference without competing for
-    attention. No dark halo (unlike the main outline): with dozens of
-    departments on screen at once a halo on every line reads as clutter
-    rather than contrast.
+    the country) as thin, dashed, translucent lines — deliberately a
+    different *kind* of line (dashed, gray, near-transparent) from
+    draw_province_outline's solid amber, so with dozens of departments on
+    screen at once they read as background reference, not as more of
+    "the" boundary. No dark halo: a halo on every dash would turn into
+    visual clutter at this density.
     """
     from PIL import ImageDraw
 
-    width = max(1, round(1 * frame.width / 768))
+    scale = frame.width / 768
+    width = max(1, round(scale))
+    dash = max(3, round(5 * scale))
+    gap = max(3, round(4 * scale))
     draw = ImageDraw.Draw(frame, "RGBA")
     for ring in rings:
         points = []
@@ -231,7 +268,7 @@ def draw_subdivision_lines(
             px, py = deg2pixel(lat, lon)
             points.append((px - origin_x, py - origin_y))
         if len(points) >= 2:
-            draw.line(points + [points[0]], fill=color, width=width)
+            _dashed_polyline(draw, points + [points[0]], color, width, dash, gap)
 
 
 def draw_region_overlay(
