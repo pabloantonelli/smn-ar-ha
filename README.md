@@ -1,8 +1,12 @@
 # SMN Argentina para Home Assistant
 
-Integración de Home Assistant para el clima, pronóstico y alertas del
-[Servicio Meteorológico Nacional](https://www.smn.gob.ar) de Argentina, más
-un add-on que resuelve el acceso a su API no oficial.
+Lleva el clima oficial del [Servicio Meteorológico Nacional](https://www.smn.gob.ar)
+a Home Assistant: clima actual y pronóstico de 7 días, alertas tempranas
+por tipo de evento, avisos a muy corto plazo con precisión de punto exacto
+(no por zona aproximada), y cámaras con radar de precipitación e imágenes
+satelitales reales — en color, infrarrojo, fijas o animadas, de tu zona,
+tu provincia o todo el país — todo con datos oficiales, no de un
+agregador de terceros.
 
 ## Por qué dos componentes
 
@@ -249,52 +253,6 @@ concatenarle el dominio externo a mano en la plantilla, ej.:
 ```yaml
 {{ 'https://tu-dominio-externo.com' ~ state_attr('camera.<tu_nombre>_satelite_animado', 'entity_picture') }}
 ```
-
-## Idioma: por qué a veces aparece en inglés
-
-Los archivos de traducción (`translations/es.json`) ya cubren toda la
-integración (entidades, servicios). Si las ves en inglés a pesar de tener
-Home Assistant en español, es casi siempre porque **el idioma se resuelve
-por perfil de usuario, no por el idioma general del sistema**: Perfil
-(ícono abajo a la izquierda) → Idioma → Español. Un cambio ahí basta, sin
-tocar nada de la integración.
-
-## Qué significa "Safe" / "Unsafe" en los sensores de alerta
-
-No es texto nuestro: es la traducción nativa de Home Assistant para el
-`device_class: safety` de los binary sensors (así se llama en cualquier
-integración que use esa clase, no solo esta). El significado:
-
-- **Safe / Seguro** (`off`): no hay alerta activa de ese tipo.
-- **Unsafe / Inseguro** (`on`): hay una alerta activa de ese tipo ahora
-  mismo (por eso en la captura "Short-term alert", "Thunderstorm alert" y
-  "Weather alert" aparecían en `Unsafe` — había tormenta activa).
-
-Una vez corregido el idioma del perfil (ver arriba), Home Assistant lo
-traduce solo a "Seguro"/"Inseguro" — es parte del core, no de esta
-integración.
-
-## Ícono de la integración
-
-El placeholder gris "icon not available" que se ve en la tarjeta de la
-integración se soluciona con
-`custom_components/smn_ar/brand/{icon.png,logo.png}`, que ya están
-en este repo. Desde Home Assistant 2026.3 las integraciones custom pueden
-traer su propio ícono así, con prioridad automática sobre el CDN de
-[`home-assistant/brands`](https://github.com/home-assistant/brands) — no
-hace falta ningún PR externo ni configuración adicional en
-`manifest.json`. Alcanza con reiniciar Home Assistant después de
-actualizar la integración para que el ícono aparezca. En versiones de HA
-anteriores a 2026.3 va a seguir mostrando el placeholder (no hay forma de
-evitarlo salvo actualizar HA).
-
-## Estado actual (validado con un spike real, no solo en teoría)
-
-✅ **Funciona end-to-end**: clima actual, pronóstico de 7 días,
-amanecer/atardecer, alertas por evento, avisos a muy corto plazo, y la
-resolución de ubicación por lat/lon (`georef/location/coord`) — probado
-con `curl` contra el proxy real corriendo en Docker, todos devuelven 200
-con datos reales.
 
 ## Créditos
 
