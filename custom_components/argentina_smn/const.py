@@ -280,6 +280,9 @@ WIND_CARDINAL_DIRECTIONS: Final = [
 ]
 
 
+NEXT_RAIN_PROBABILITY_THRESHOLD: Final = 30  # % — minimum rain_prob_range max to count
+
+
 def wind_cardinal(degrees: float | int | None) -> str | None:
     """Convert a wind bearing in degrees to a 16-point compass direction."""
     if degrees is None:

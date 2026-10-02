@@ -69,6 +69,7 @@ dispositivo o una palabra del nombre visible (ej. "corto plazo").
 | `sensor` | Dirección del viento | Dirección del viento actual, como punto cardinal (ej. "NE"); el valor en grados queda en el atributo `degrees` | 30 min |
 | `sensor` | Pronóstico de hoy | Condición de hoy; máxima/mínima en los atributos `temp_max`/`temp_min` | 30 min |
 | `sensor` | Pronóstico de mañana | Condición de mañana; máxima/mínima en los atributos `temp_max`/`temp_min` | 30 min |
+| `sensor` | Próxima lluvia | Cuándo es el próximo período con probabilidad de lluvia relevante (timestamp) | 30 min |
 | `camera` | Radar | Foto con radar de precipitación + zona de alerta + clima actual y próximas horas | 10 min |
 | `camera` | Satélite | Foto satelital (GOES-East) alrededor de tu ubicación, con flecha de deriva de nubes | 10 min |
 | `camera` | Satélite (animado) | GIF de la última hora de imágenes satelitales — pensado para compartir como **URL**, no como adjunto | 20 min |
@@ -184,6 +185,25 @@ mismo como entidades independientes:
   (ej. "nublado"), con `temp_max`/`temp_min`/`date` como atributos —
   pensado para mostrar "mañana: nublado, 18°/9°" sin tener que leer el
   `forecast` completo de la entidad `weather`.
+
+### `sensor` "Próxima lluvia"
+
+SMN no publica un pronóstico realmente horario — son 4 períodos por día
+(madrugada/mañana/tarde/noche). Este sensor recorre esos períodos (de hoy
+en adelante) y devuelve el primero cuya probabilidad de lluvia llega a
+30% o más (`NEXT_RAIN_PROBABILITY_THRESHOLD` en `const.py`, por si se
+quiere un umbral distinto).
+
+`state` es un **timestamp** (`device_class: timestamp`), no texto — así
+Home Assistant lo muestra solo como "en 3 horas" / "mañana" en el
+dashboard, y se puede usar directo en una condición de automatización
+(ej. "disparar 30 min antes de este timestamp"). Atributos:
+`rain_expected` (`true`/`false`), y si es `true`: `probability` (el % de
+ese período) y `condition`. Si no hay ningún período con probabilidad
+suficiente dentro del horizonte de pronóstico de SMN, `state` queda
+`unknown` y `rain_expected` es `false` — no significa "no va a llover
+nunca", sólo que no hay nada así de probable todavía en el pronóstico
+disponible.
 
 ### Evento `argentina_smn_shortterm_alert_changed`: avisos a muy corto plazo en tiempo real
 

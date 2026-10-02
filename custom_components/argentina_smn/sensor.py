@@ -7,6 +7,7 @@ a notification, or a TTS announcement without parsing individual sensors.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any
 
@@ -27,13 +28,62 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ALERT_EVENT_MAP, ALERT_LEVEL_MAP, DOMAIN, wind_cardinal
+from .const import (
+    ALERT_EVENT_MAP,
+    ALERT_LEVEL_MAP,
+    DOMAIN,
+    NEXT_RAIN_PROBABILITY_THRESHOLD,
+    wind_cardinal,
+)
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .weather import format_condition
 
 _LOGGER = logging.getLogger(__name__)
 
 MAX_STATE_LENGTH = 255
+
+# Argentina doesn't observe DST, so a fixed UTC-3 offset is always correct
+# for SMN's forecast timestamps regardless of where the HA host itself is
+# configured — same reasoning satellite.py uses for its frame captions.
+_ARG_TZ = timezone(timedelta(hours=-3))
+
+
+def _parse_period_datetime(date_str: str | None, time_str: str | None) -> datetime | None:
+    """Parse an hourly_forecast period's separate date/time strings as Argentina local time."""
+    if not date_str or not time_str:
+        return None
+    try:
+        naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return None
+    return naive.replace(tzinfo=_ARG_TZ)
+
+
+def find_next_rain(
+    hourly_forecast: list[dict[str, Any]],
+    threshold: int = NEXT_RAIN_PROBABILITY_THRESHOLD,
+) -> dict[str, Any] | None:
+    """Return the next upcoming forecast period with a meaningful rain chance.
+
+    SMN's "hourly" forecast is actually 4 coarse periods/day (early
+    morning/morning/afternoon/night), not truly hourly — so this is "next
+    period with rain likely", not a precise time of day. Returns the
+    earliest future period whose `rain_prob_range` max reaches `threshold`
+    (%), or None if nothing in the forecast horizon qualifies.
+    """
+    now = datetime.now(_ARG_TZ)
+    best: tuple[datetime, dict[str, Any]] | None = None
+    for period in hourly_forecast:
+        when = _parse_period_datetime(period.get("date"), period.get("time"))
+        if when is None or when < now:
+            continue
+        rain_prob_range = period.get("rain_prob_range")
+        probability = max(rain_prob_range) if rain_prob_range else None
+        if probability is None or probability < threshold:
+            continue
+        if best is None or when < best[0]:
+            best = (when, {**period, "_when": when, "_probability": probability})
+    return best[1] if best else None
 
 
 def _format_time(iso_str: str | None) -> str | None:
@@ -205,6 +255,7 @@ async def async_setup_entry(
             SMNWindBearingSensor(coordinator, config_entry),
             SMNTodayForecastSensor(coordinator, config_entry),
             SMNTomorrowForecastSensor(coordinator, config_entry),
+            SMNNextRainSensor(coordinator, config_entry),
         ]
     )
 
@@ -378,6 +429,46 @@ class SMNTomorrowForecastSensor(_SMNDailyForecastSensor):
 
     def __init__(self, coordinator, config_entry) -> None:
         super().__init__(coordinator, config_entry, "_tomorrow_forecast")
+
+
+class SMNNextRainSensor(_SMNSensorBase):
+    """When the next period with a meaningful rain chance is expected.
+
+    State is a timestamp (device_class TIMESTAMP), so a dashboard shows it
+    as "en 3 horas" automatically and it's directly usable in automation
+    triggers/conditions (e.g. "fires N minutes before this timestamp").
+    `None` means nothing in SMN's forecast horizon currently reaches
+    NEXT_RAIN_PROBABILITY_THRESHOLD — not necessarily "no rain ever", just
+    nothing forecast yet; see `probability`/`rain_expected` in the
+    attributes to tell "no rain forecast" apart from "data not loaded yet".
+    """
+
+    _attr_translation_key = "next_rain"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:weather-pouring"
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_next_rain")
+
+    @property
+    def _next_rain(self) -> dict[str, Any] | None:
+        return find_next_rain(self.coordinator.data.hourly_forecast)
+
+    @property
+    def native_value(self) -> datetime | None:
+        next_rain = self._next_rain
+        return next_rain["_when"] if next_rain else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        next_rain = self._next_rain
+        if not next_rain:
+            return {"rain_expected": False}
+        return {
+            "rain_expected": True,
+            "probability": next_rain["_probability"],
+            "condition": format_condition(next_rain.get("weather")),
+        }
 
 
 class SMNShortTermSummarySensor(

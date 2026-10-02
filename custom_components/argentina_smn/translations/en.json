@@ -167,6 +167,9 @@
       },
       "tomorrow_forecast": {
         "name": "Tomorrow's forecast"
+      },
+      "next_rain": {
+        "name": "Next rain"
       }
     }
   }

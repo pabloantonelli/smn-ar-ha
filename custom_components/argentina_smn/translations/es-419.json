@@ -167,6 +167,9 @@
       },
       "tomorrow_forecast": {
         "name": "Pronóstico de mañana"
+      },
+      "next_rain": {
+        "name": "Próxima lluvia"
       }
     }
   }
