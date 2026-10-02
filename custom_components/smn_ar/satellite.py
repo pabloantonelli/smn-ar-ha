@@ -884,6 +884,16 @@ def _rings_pixel_bbox(
 
 _MIN_REGION_OUTPUT_WIDTH = 420
 _MAX_REGION_UPSCALE = 1.8
+# Home Assistant's camera "more info" dialog stretches whatever image it's
+# given to the dialog's width, so a tall/narrow shape (Córdoba, or
+# Argentina itself) comes out needing to scroll to see the whole thing,
+# and looks softer than it should since the browser is doing its own
+# (non-LANCZOS) upscale on top of ours. Capping the height:width ratio by
+# padding width with the same dark background — rather than leaving it to
+# whatever the shape's real aspect ratio is — keeps the whole image
+# visible without scrolling and closer to the resolution the dialog will
+# actually render it at.
+_MAX_REGION_ASPECT_RATIO = 1.5  # height <= 1.5 * width
 
 
 def _center_on_shape(
@@ -942,6 +952,12 @@ def _center_on_shape(
         if scale > 1.01:
             new_size = (round(cropped.width * scale), round(cropped.height * scale))
             cropped = cropped.resize(new_size, Image.LANCZOS)
+
+    if cropped.height > cropped.width * _MAX_REGION_ASPECT_RATIO:
+        target_width = round(cropped.height / _MAX_REGION_ASPECT_RATIO)
+        padded = Image.new("RGBA", (target_width, cropped.height), (0, 0, 0, 255))
+        padded.paste(cropped, ((target_width - cropped.width) // 2, 0))
+        cropped = padded
     return cropped
 
 
