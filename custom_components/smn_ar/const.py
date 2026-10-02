@@ -134,6 +134,12 @@ SATELLITE_UPDATE_INTERVAL: Final = 600  # 10 min, matches GIBS' frame cadence
 # How many past 10-min frames the animated GIF camera stitches together.
 SATELLITE_ANIMATION_FRAMES: Final = 10  # last ~100 min (GIBS' 10-min cadence)
 SATELLITE_ANIMATION_UPDATE_INTERVAL: Final = 1200  # 20 min: N tile fetches, expensive
+# Extra older candidate timestamps fetched beyond SATELLITE_ANIMATION_FRAMES,
+# so a few incomplete frames (GIBS still publishing some of a timestamp's
+# tiles — more likely the bigger the tile grid, e.g. the country camera's
+# 6x6) don't silently shrink the animation below its target frame count;
+# the most recent SATELLITE_ANIMATION_FRAMES *complete* ones are kept.
+SATELLITE_ANIMATION_LOOKBACK_BUFFER: Final = 6
 
 # GIBS' max zoom level per layer — same numbers as GIBS_MATRIX_SET_*, kept
 # separately as plain ints since the region cameras need to search zoom

@@ -27,6 +27,7 @@ from .const import (
     GIBS_MAX_ZOOM_INFRARED,
     GIBS_TILE_URL_TEMPLATE,
     SATELLITE_ANIMATION_FRAMES,
+    SATELLITE_ANIMATION_LOOKBACK_BUFFER,
     SATELLITE_REGION_TILE_GRID,
     SATELLITE_TILE_GRID,
     SATELLITE_TILE_SIZE,
@@ -724,15 +725,21 @@ async def build_satellite_animation_gif(
     if latest_time is None:
         _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
         return None
-    times = _recent_frame_times(latest_time, SATELLITE_ANIMATION_FRAMES)
+    times = _recent_frame_times(
+        latest_time, SATELLITE_ANIMATION_FRAMES + SATELLITE_ANIMATION_LOOKBACK_BUFFER
+    )
 
     results = await asyncio.gather(
         *(_fetch_mosaic(session, layer, matrix_set, when, center_x, center_y) for when in times)
     )
     # A frame with any missing tile is dropped rather than shown with black
-    # holes in it — see _fetch_mosaic's docstring. Occasionally losing one
-    # of SATELLITE_ANIMATION_FRAMES beats a visibly broken animation.
+    # holes in it — see _fetch_mosaic's docstring. More candidates than
+    # SATELLITE_ANIMATION_FRAMES were requested above specifically so that
+    # dropping a few incomplete ones still leaves enough to reach the
+    # target count — keep the most recent SATELLITE_ANIMATION_FRAMES that
+    # came back complete (times/results are already oldest-first).
     kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
+    kept = kept[-SATELLITE_ANIMATION_FRAMES:]
     total = len(kept)
     smoothed: list[Any] = []
     for i, (mosaic, when) in enumerate(kept):
@@ -1030,7 +1037,9 @@ async def build_region_animation_gif(
     if latest_time is None:
         _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
         return None
-    times = _recent_frame_times(latest_time, SATELLITE_ANIMATION_FRAMES)
+    times = _recent_frame_times(
+        latest_time, SATELLITE_ANIMATION_FRAMES + SATELLITE_ANIMATION_LOOKBACK_BUFFER
+    )
 
     results = await asyncio.gather(
         *(
@@ -1038,7 +1047,14 @@ async def build_region_animation_gif(
             for when in times
         )
     )
+    # See build_satellite_animation_gif: more candidates than needed are
+    # fetched so incomplete ones (more likely here — a bigger tile grid,
+    # e.g. the country camera's 6x6, has more tiles that could be missing
+    # for a given timestamp) don't shrink the animation below its target
+    # frame count. Keep the most recent SATELLITE_ANIMATION_FRAMES that
+    # came back complete.
     kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
+    kept = kept[-SATELLITE_ANIMATION_FRAMES:]
     total = len(kept)
     deg2pixel = lambda lat, lon: _deg2pixel(lat, lon, zoom)  # noqa: E731
     bbox = _rings_pixel_bbox(rings, deg2pixel, origin_x, origin_y)
