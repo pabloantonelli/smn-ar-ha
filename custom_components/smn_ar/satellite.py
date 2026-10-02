@@ -45,24 +45,21 @@ _FRAME_INTERVAL = timedelta(minutes=10)
 _MAX_LOOKBACK_SLOTS = 12  # up to 2h back before giving up on finding a frame
 
 
-def _layer_for(is_daytime: bool, force_infrared: bool = False) -> tuple[str, str]:
-    """Return (layer, matrix_set) — GeoColor by day, clean IR by night (or always, if forced).
+def _layer_for(force_infrared: bool = False) -> tuple[str, str]:
+    """Return (layer, matrix_set): GeoColor, or Band13 clean infrared if forced.
 
-    GeoColor is true-color imagery, so it's just a black frame after dark.
-    Band13 clean infrared shows cloud-top temperature instead, which works
-    the same day or night — `force_infrared` is for a camera that always
-    wants that view (e.g. to see storm-top structure that reads better in
-    IR than in daylight GeoColor), not just as the night fallback.
+    No automatic night fallback to infrared: GIBS' GeoColor product already
+    blends in a night-time view (gray IR-based clouds over city lights), so
+    it stays readable after dark — switching layers at sunset only made the
+    regular and the "Infrarrojo" cameras look identical all night.
     """
-    if force_infrared or not is_daytime:
+    if force_infrared:
         return GIBS_LAYER_INFRARED, GIBS_MATRIX_SET_INFRARED
     return GIBS_LAYER_GEOCOLOR, GIBS_MATRIX_SET_GEOCOLOR
 
 
-def _max_zoom_for(is_daytime: bool, force_infrared: bool = False) -> int:
-    if force_infrared or not is_daytime:
-        return GIBS_MAX_ZOOM_INFRARED
-    return GIBS_MAX_ZOOM_GEOCOLOR
+def _max_zoom_for(force_infrared: bool = False) -> int:
+    return GIBS_MAX_ZOOM_INFRARED if force_infrared else GIBS_MAX_ZOOM_GEOCOLOR
 
 
 _INFRARED_BLUR_RADIUS = 2.0
@@ -386,6 +383,15 @@ def _format_frame_caption(when: datetime) -> str:
     return f"{local.strftime('%H:%M')} · {relative}"
 
 
+def _caption_bar_height(frame_width: int, has_timeline: bool) -> int:
+    """Height of the bottom banner _draw_caption draws on a frame this wide."""
+    scale = frame_width / _REFERENCE_FRAME_WIDTH
+    font_size = round(_scaled(22, scale, 20, 38))
+    padding = round(_scaled(10, scale, 10, 18))
+    timeline_height = round(_scaled(22, scale, 20, 34)) if has_timeline else 0
+    return font_size + 2 * padding + timeline_height
+
+
 def _draw_caption(
     frame: Any,
     text: str,
@@ -638,7 +644,6 @@ async def build_satellite_snapshot_jpeg(
     session: aiohttp.ClientSession,
     latitude: float,
     longitude: float,
-    is_daytime: bool,
     with_motion_arrow: bool = True,
     force_infrared: bool = False,
     current_weather: dict[str, Any] | None = None,
@@ -648,13 +653,12 @@ async def build_satellite_snapshot_jpeg(
     When `with_motion_arrow` is set, also fetches the previous frame (one
     extra mosaic fetch) purely to estimate and draw a drift arrow — see
     _estimate_motion_vector's docstring for what that vector does and
-    doesn't mean. `force_infrared` always uses Band13 clean IR instead of
-    the day/night-dependent default — for a camera that wants that view
-    specifically, not just as the night fallback. `current_weather` (same
+    doesn't mean. `force_infrared` uses Band13 clean IR instead of
+    GeoColor (see _layer_for). `current_weather` (same
     shape as coordinator.data's field) labels the location pin's
     temperature, if given.
     """
-    layer, matrix_set = _layer_for(is_daytime, force_infrared)
+    layer, matrix_set = _layer_for(force_infrared)
     center_x, center_y = _deg2tile(latitude, longitude, SATELLITE_ZOOM)
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
     if latest_time is None:
@@ -691,22 +695,19 @@ async def build_satellite_snapshot_jpeg(
     return buffer.getvalue()
 
 
-async def build_satellite_animation_gif(
+async def build_satellite_animation_frames(
     session: aiohttp.ClientSession,
     latitude: float,
     longitude: float,
-    is_daytime: bool,
     force_infrared: bool = False,
     current_weather: dict[str, Any] | None = None,
-) -> bytes | None:
-    """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES GIBS frames.
+) -> list[Any] | None:
+    """Rendered frames (oldest first) of the last SATELLITE_ANIMATION_FRAMES GIBS frames.
 
-    Intended to be shared as a URL (this integration's satellite animation
-    camera entity, whose entity_picture is a normal HA signed URL), not
-    attached as a photo — several notification integrations mis-handle a
-    non-JPEG camera attachment, see radar.py's docstring.
+    Encode them with encode_animation(). Rendering runs in the executor so
+    Pillow's work doesn't block Home Assistant's event loop.
     """
-    layer, matrix_set = _layer_for(is_daytime, force_infrared)
+    layer, matrix_set = _layer_for(force_infrared)
     center_x, center_y = _deg2tile(latitude, longitude, SATELLITE_ZOOM)
     latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
     if latest_time is None:
@@ -721,34 +722,34 @@ async def build_satellite_animation_gif(
     )
     # A frame with any missing tile is dropped rather than shown with black
     # holes in it — see _fetch_mosaic's docstring. More candidates than
-    # SATELLITE_ANIMATION_FRAMES were requested above specifically so that
-    # dropping a few incomplete ones still leaves enough to reach the
-    # target count — keep the most recent SATELLITE_ANIMATION_FRAMES that
-    # came back complete (times/results are already oldest-first).
+    # SATELLITE_ANIMATION_FRAMES were requested above so that dropping a few
+    # incomplete ones still leaves enough to reach the target count.
     kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
     kept = kept[-SATELLITE_ANIMATION_FRAMES:]
-    total = len(kept)
-    smoothed: list[Any] = []
-    for i, (mosaic, when) in enumerate(kept):
-        mosaic = _smooth_if_infrared(mosaic, layer)
-        _draw_outline(mosaic, center_x, center_y)
-        _draw_location_pin(
-            mosaic,
-            latitude,
-            longitude,
-            SATELLITE_ZOOM,
-            *_local_origin(center_x, center_y),
-            current_weather,
-        )
-        if layer == GIBS_LAYER_INFRARED:
-            _draw_ir_legend(mosaic)
-        _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)
-        smoothed.append(mosaic)
-    frames = [mosaic.convert("RGB") for mosaic in smoothed]
-    if not frames:
+    if not kept:
         return None
-    return _encode_gif(frames)
 
+    def render() -> list[Any]:
+        total = len(kept)
+        frames = []
+        for i, (mosaic, when) in enumerate(kept):
+            mosaic = _smooth_if_infrared(mosaic, layer)
+            _draw_outline(mosaic, center_x, center_y)
+            _draw_location_pin(
+                mosaic,
+                latitude,
+                longitude,
+                SATELLITE_ZOOM,
+                *_local_origin(center_x, center_y),
+                current_weather,
+            )
+            if layer == GIBS_LAYER_INFRARED:
+                _draw_ir_legend(mosaic)
+            _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)
+            frames.append(mosaic.convert("RGB"))
+        return frames
+
+    return await asyncio.get_running_loop().run_in_executor(None, render)
 
 
 # --- Region (country / province) cameras -----------------------------------
@@ -970,16 +971,15 @@ def _encode_gif(frames: list[Any], frame_ms: int = 450, hold_last_ms: int = 1500
 
 
 def _region_view_for(
-    rings: list[list[tuple[float, float]]], is_daytime: bool, force_infrared: bool
+    rings: list[list[tuple[float, float]]], force_infrared: bool
 ) -> _RegionView:
-    layer, matrix_set = _layer_for(is_daytime, force_infrared)
-    return _RegionView(rings, layer, matrix_set, _max_zoom_for(is_daytime, force_infrared))
+    layer, matrix_set = _layer_for(force_infrared)
+    return _RegionView(rings, layer, matrix_set, _max_zoom_for(force_infrared))
 
 
 async def build_region_snapshot_jpeg(
     session: aiohttp.ClientSession,
     rings: list[list[tuple[float, float]]],
-    is_daytime: bool,
     force_infrared: bool = False,
     pin: tuple[float, float] | None = None,
     current_weather: dict[str, Any] | None = None,
@@ -994,7 +994,7 @@ async def build_region_snapshot_jpeg(
     """
     if not rings:
         return None
-    view = _region_view_for(rings, is_daytime, force_infrared)
+    view = _region_view_for(rings, force_infrared)
     latest_time = await _resolve_latest_frame_time(session, view.layer, view.matrix_set)
     if latest_time is None:
         _LOGGER.warning("No recent GIBS frame found for layer %s", view.layer)
@@ -1007,33 +1007,35 @@ async def build_region_snapshot_jpeg(
         if complete:
             break
 
-    frame = _render_region_frame(
-        raster, view, rings, subdivisions, pin, current_weather, _format_frame_caption(when)
-    )
-    buffer = io.BytesIO()
-    frame.save(buffer, format="JPEG", quality=90)
-    return buffer.getvalue()
+    def render() -> bytes:
+        frame = _render_region_frame(
+            raster, view, rings, subdivisions, pin, current_weather, _format_frame_caption(when)
+        )
+        buffer = io.BytesIO()
+        frame.save(buffer, format="JPEG", quality=90)
+        return buffer.getvalue()
+
+    return await asyncio.get_running_loop().run_in_executor(None, render)
 
 
-async def build_region_animation_gif(
+async def build_region_animation_frames(
     session: aiohttp.ClientSession,
     rings: list[list[tuple[float, float]]],
-    is_daytime: bool,
     force_infrared: bool = False,
     pin: tuple[float, float] | None = None,
     current_weather: dict[str, Any] | None = None,
     subdivisions: list[list[tuple[float, float]]] | None = None,
-) -> bytes | None:
-    """Animated GIF of the last SATELLITE_ANIMATION_FRAMES frames of a whole area.
+) -> list[Any] | None:
+    """Rendered frames (oldest first) of the last SATELLITE_ANIMATION_FRAMES of a whole area.
 
-    Same rendering as build_region_snapshot_jpeg. More candidate timestamps
-    than needed are fetched (SATELLITE_ANIMATION_LOOKBACK_BUFFER) so a few
-    incomplete ones don't shrink the animation; the most recent complete
-    ones are kept.
+    Same rendering as build_region_snapshot_jpeg; encode with
+    encode_animation(). More candidate timestamps than needed are fetched
+    (SATELLITE_ANIMATION_LOOKBACK_BUFFER) so a few incomplete ones don't
+    shrink the animation; the most recent complete ones are kept.
     """
     if not rings:
         return None
-    view = _region_view_for(rings, is_daytime, force_infrared)
+    view = _region_view_for(rings, force_infrared)
     latest_time = await _resolve_latest_frame_time(session, view.layer, view.matrix_set)
     if latest_time is None:
         _LOGGER.warning("No recent GIBS frame found for layer %s", view.layer)
@@ -1048,24 +1050,105 @@ async def build_region_animation_gif(
     kept = kept[-SATELLITE_ANIMATION_FRAMES:]
     if not kept:
         return None
-    if len(kept) < 2:
-        _LOGGER.debug(
-            "Only %d complete GIBS frame(s) for %s, animation won't move", len(kept), view.layer
-        )
 
-    total = len(kept)
-    frames = [
-        _render_region_frame(
-            raster,
-            view,
-            rings,
-            subdivisions,
-            pin,
-            current_weather,
-            _format_frame_caption(when),
-            frame_index=i,
-            total_frames=total,
-        )
-        for i, (raster, when) in enumerate(kept)
-    ]
-    return _encode_gif(frames)
+    def render() -> list[Any]:
+        total = len(kept)
+        return [
+            _render_region_frame(
+                raster,
+                view,
+                rings,
+                subdivisions,
+                pin,
+                current_weather,
+                _format_frame_caption(when),
+                frame_index=i,
+                total_frames=total,
+            )
+            for i, (raster, when) in enumerate(kept)
+        ]
+
+    return await asyncio.get_running_loop().run_in_executor(None, render)
+
+
+# --- Encoding ---------------------------------------------------------------
+
+# Video: crossfaded in-between frames so the loop looks smooth instead of
+# jumping every ~half second. Cheap (a Pillow blend per in-between frame) and
+# MP4/H.264 compresses them well, unlike GIF where every extra frame costs
+# almost a full frame of file size — so the dashboard GIF keeps only the
+# real frames.
+_VIDEO_FPS = 12
+_VIDEO_INBETWEENS = 5
+_VIDEO_HOLD_LAST_SECONDS = 1.5
+
+
+def encode_animation(frames: list[Any]) -> dict[str, bytes | None]:
+    """Encode rendered frames as {"gif": ..., "mp4": ...} (blocking — run in an executor).
+
+    The GIF is what the dashboard shows (a camera card renders it in an
+    <img>). The MP4 is for sharing: WhatsApp's "GIFs" are really short
+    looping MP4s, and notification integrations that pick the message type
+    from the camera's content type (e.g. Hornero) send `video/mp4` as a
+    video. `mp4` is None if PyAV isn't available.
+    """
+    return {"gif": _encode_gif(frames), "mp4": _encode_mp4(frames)}
+
+
+def _encode_mp4(frames: list[Any]) -> bytes | None:
+    """H.264 MP4 of `frames` with crossfaded in-betweens, or None without PyAV.
+
+    PyAV ships with Home Assistant itself (its `stream` integration uses
+    it), so this adds no dependency in practice; it's imported lazily so a
+    setup without it still gets the GIF.
+    """
+    try:
+        import av
+    except ImportError:
+        _LOGGER.warning("PyAV not available, satellite video cameras won't have an image")
+        return None
+    from PIL import Image
+
+    # yuv420p needs even dimensions.
+    width, height = frames[0].size
+    width, height = width - width % 2, height - height % 2
+    frames = [f if f.size == (width, height) else f.crop((0, 0, width, height)) for f in frames]
+
+    # The caption/timeline bar isn't blended (it would overlap two
+    # timestamps): in-betweens take it from whichever real frame is nearer.
+    bar = min(height, _caption_bar_height(width, len(frames) > 1) + 2)
+    bar_box = (0, height - bar, width, height)
+    sequence: list[Any] = []
+    for current, following in zip(frames, frames[1:]):
+        sequence.append(current)
+        for step in range(1, _VIDEO_INBETWEENS + 1):
+            weight = step / (_VIDEO_INBETWEENS + 1)
+            blended = Image.blend(current, following, weight)
+            nearest = current if weight < 0.5 else following
+            blended.paste(nearest.crop(bar_box), (0, height - bar))
+            sequence.append(blended)
+    sequence.extend([frames[-1]] * max(1, round(_VIDEO_FPS * _VIDEO_HOLD_LAST_SECONDS)))
+
+    # `faststart` (index at the start of the file, which messaging apps
+    # expect) rewrites the file at close, so it needs a real path rather
+    # than an in-memory buffer.
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    try:
+        container = av.open(path, mode="w", options={"movflags": "faststart"})
+        stream = container.add_stream("libx264", rate=_VIDEO_FPS)
+        stream.width, stream.height = width, height
+        stream.pix_fmt = "yuv420p"
+        stream.options = {"crf": "23", "preset": "veryfast"}
+        for image in sequence:
+            for packet in stream.encode(av.VideoFrame.from_image(image)):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+        container.close()
+        with open(path, "rb") as fh:
+            return fh.read()
+    finally:
+        os.unlink(path)
