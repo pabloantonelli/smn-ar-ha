@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_PROXY_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    EVENT_SHORTTERM_ALERT_CHANGED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -261,6 +262,16 @@ class ArgentinaSMNData:
 
         self.shortterm_alerts = data if isinstance(data, list) else []
 
+    @staticmethod
+    def _shortterm_alert_signature(alert: dict[str, Any]) -> tuple[Any, ...]:
+        """Identity of a single aviso, used to detect additions/removals.
+
+        There's no stable numeric id in the API response, so (title, date,
+        end_date) stands in for one — two avisos with the same title issued
+        at the same time are the same aviso for this purpose.
+        """
+        return (alert.get("title"), alert.get("date"), alert.get("end_date"))
+
     async def _fetch_nationwide_shortterm_alerts(self) -> None:
         """Fetch avisos a muy corto plazo for the whole country (no location filter)."""
         try:
@@ -310,6 +321,8 @@ class ArgentinaSMNDataUpdateCoordinator(DataUpdateCoordinator[ArgentinaSMNData])
         self._smn_data = ArgentinaSMNData(
             hass, proxy_url, latitude, longitude, location_id
         )
+        self._config_entry = config_entry
+        self._previous_shortterm_signatures: set[tuple[Any, ...]] | None = None
 
         super().__init__(
             hass,
@@ -321,4 +334,49 @@ class ArgentinaSMNDataUpdateCoordinator(DataUpdateCoordinator[ArgentinaSMNData])
     async def _async_update_data(self) -> ArgentinaSMNData:
         """Fetch data from the proxy."""
         await self._smn_data.fetch_data()
+        self._fire_shortterm_alert_event_if_changed()
         return self._smn_data
+
+    def _fire_shortterm_alert_event_if_changed(self) -> None:
+        """Fire EVENT_SHORTTERM_ALERT_CHANGED if the avisos vigentes changed.
+
+        Skips firing on the very first refresh (no previous state to diff
+        against) so startup doesn't fire a burst of "new" events for avisos
+        that were already active before Home Assistant started.
+        """
+        current = self._smn_data.shortterm_alerts
+        current_signatures = {
+            ArgentinaSMNData._shortterm_alert_signature(alert) for alert in current
+        }
+
+        if self._previous_shortterm_signatures is None:
+            self._previous_shortterm_signatures = current_signatures
+            return
+
+        if current_signatures == self._previous_shortterm_signatures:
+            return
+
+        previous_signatures = self._previous_shortterm_signatures
+        self._previous_shortterm_signatures = current_signatures
+
+        added = [
+            alert
+            for alert in current
+            if ArgentinaSMNData._shortterm_alert_signature(alert) not in previous_signatures
+        ]
+        removed_signatures = previous_signatures - current_signatures
+
+        _LOGGER.info(
+            "Avisos a muy corto plazo changed: %d added, %d removed",
+            len(added),
+            len(removed_signatures),
+        )
+        self.hass.bus.async_fire(
+            EVENT_SHORTTERM_ALERT_CHANGED,
+            {
+                "entry_id": self._config_entry.entry_id,
+                "added": added,
+                "removed_count": len(removed_signatures),
+                "current": current,
+            },
+        )

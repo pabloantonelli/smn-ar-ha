@@ -23,6 +23,11 @@ from homeassistant.components.weather import (
 
 DOMAIN: Final = "argentina_smn"
 
+# Fired whenever the set of avisos a muy corto plazo for the configured
+# location changes (a new one appears, or an existing one is lifted) — lets
+# automations react immediately instead of polling the summary sensor.
+EVENT_SHORTTERM_ALERT_CHANGED: Final = f"{DOMAIN}_shortterm_alert_changed"
+
 # Config keys
 CONF_PROXY_URL: Final = "proxy_url"
 CONF_LOCATION_ID: Final = "location_id"
@@ -268,6 +273,20 @@ ALERT_EVENT_ICONS: Final = {
     "viento_zonda": "mdi:weather-windy-variant",
     "humo": "mdi:smoke",
 }
+
+WIND_CARDINAL_DIRECTIONS: Final = [
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+]
+
+
+def wind_cardinal(degrees: float | int | None) -> str | None:
+    """Convert a wind bearing in degrees to a 16-point compass direction."""
+    if degrees is None:
+        return None
+    index = round(degrees / 22.5) % 16
+    return WIND_CARDINAL_DIRECTIONS[index]
+
 
 # Alert level mappings - SMN alert level to severity
 ALERT_LEVEL_MAP: Final = {

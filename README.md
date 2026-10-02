@@ -62,6 +62,13 @@ dispositivo o una palabra del nombre visible (ej. "corto plazo").
 | `binary_sensor` | Alerta a corto plazo | **¿Tu ubicación exacta está dentro de una zona de alerta activa ahora?** | 10 min |
 | `sensor` | Pronóstico de corto plazo | Resumen en una frase de la situación de corto plazo | 10 min |
 | `sensor` | Avisos por provincia (país) | Avisos activos en todo el país, agrupados por provincia | 10 min |
+| `sensor` | Temperatura | Temperatura actual, como entidad propia (separada de `weather`) | 30 min |
+| `sensor` | Sensación térmica | Temperatura percibida actual | 30 min |
+| `sensor` | Humedad | Humedad relativa actual (%) | 30 min |
+| `sensor` | Velocidad del viento | Velocidad del viento actual (km/h) | 30 min |
+| `sensor` | Dirección del viento | Dirección del viento actual, como punto cardinal (ej. "NE"); el valor en grados queda en el atributo `degrees` | 30 min |
+| `sensor` | Pronóstico de hoy | Condición de hoy; máxima/mínima en los atributos `temp_max`/`temp_min` | 30 min |
+| `sensor` | Pronóstico de mañana | Condición de mañana; máxima/mínima en los atributos `temp_max`/`temp_min` | 30 min |
 | `camera` | Radar | Foto con radar de precipitación + zona de alerta + clima actual y próximas horas | 10 min |
 | `camera` | Satélite | Foto satelital (GOES-East) alrededor de tu ubicación, con flecha de deriva de nubes | 10 min |
 | `camera` | Satélite (animado) | GIF de la última hora de imágenes satelitales — pensado para compartir como **URL**, no como adjunto | 20 min |
@@ -155,6 +162,74 @@ Córdoba, Santa Fe"). Atributo `por_provincia`: diccionario con el detalle
 de cada aviso agrupado por provincia. Es la misma entidad que alimenta
 los polígonos que dibuja la cámara de radar (ver abajo) — mismos datos,
 dos formas de verlos (texto vs. mapa).
+
+### `sensor` temperatura / sensación térmica / humedad / viento / pronóstico de hoy y mañana
+
+Los mismos datos ya están en la entidad `weather` (como `native_temperature`,
+`humidity`, `wind_speed`, `wind_bearing`, y en `async_forecast_daily`), pero
+ahí sólo son atributos/forecast de una única entidad — no se pueden graficar
+en una tarjeta de historial, usar en una condición simple de automatización,
+ni exponer a Alexa/Google como un sensor suelto. Estos sensores exponen lo
+mismo como entidades independientes:
+
+- **Temperatura**, **Sensación térmica**, **Humedad**, **Velocidad del
+  viento**: `state` es el valor actual, con su `device_class`/unidad
+  correspondiente (se pueden graficar directo en Historial/Estadísticas de
+  HA).
+- **Dirección del viento**: `state` es el punto cardinal (ej. `"NE"`,
+  `"SSO"`... en realidad se devuelve en inglés de 16 puntos, ej. `"NNE"`),
+  más legible que un número en una tarjeta; el valor exacto en grados queda
+  en el atributo `degrees` para quien lo necesite preciso.
+- **Pronóstico de hoy** / **Pronóstico de mañana**: `state` es la condición
+  (ej. "nublado"), con `temp_max`/`temp_min`/`date` como atributos —
+  pensado para mostrar "mañana: nublado, 18°/9°" sin tener que leer el
+  `forecast` completo de la entidad `weather`.
+
+### Evento `argentina_smn_shortterm_alert_changed`: avisos a muy corto plazo en tiempo real
+
+Además del sensor "Pronóstico de corto plazo" (que hay que consultar o
+mirar cuando cambia su `state`), la integración dispara un **evento de Home
+Assistant** cada vez que cambia el conjunto de avisos a muy corto plazo
+vigentes para tu ubicación — aparece uno nuevo, o se levanta uno existente.
+Sirve para que una automatización reaccione al instante (ej. enviar una
+notificación push) en vez de tener que sondear el sensor.
+
+Se puede escuchar con un trigger de tipo **Evento**, evento
+`argentina_smn_shortterm_alert_changed`. Datos del evento:
+
+```yaml
+entry_id: "<id de esta instancia de la integración>"
+added:        # avisos nuevos desde la última actualización (puede estar vacío)
+  - title: "Aviso por tormentas fuertes"
+    date: "2026-10-02T18:00:00"
+    end_date: "2026-10-02T20:00:00"
+    zones: ["CORDOBA: Capital, ..."]
+    instructions: "..."
+removed_count: 0   # cantidad de avisos que estaban vigentes y dejaron de estarlo
+current:       # lista completa de avisos vigentes después del cambio
+  - ...
+```
+
+No se dispara en el primer refresh tras un reinicio de HA (no hay un
+"antes" con qué comparar todavía), así que no genera un aviso falso por
+cada aviso que ya estaba activo cuando arrancó Home Assistant — sólo avisa
+de cambios reales mientras la integración está corriendo.
+
+Ejemplo de automatización (notificar sólo cuando aparece un aviso nuevo):
+
+```yaml
+trigger:
+  - trigger: event
+    event_type: argentina_smn_shortterm_alert_changed
+condition:
+  - condition: template
+    value_template: "{{ trigger.event.data.added | length > 0 }}"
+action:
+  - action: notify.mobile_app_tu_telefono
+    data:
+      title: "Nuevo aviso SMN"
+      message: "{{ trigger.event.data.added[0].title }}"
+```
 
 ### `camera` "Radar": foto del radar + clima
 

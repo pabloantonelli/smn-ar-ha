@@ -10,15 +10,24 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME
+from homeassistant.const import (
+    CONF_NAME,
+    PERCENTAGE,
+    UnitOfSpeed,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ALERT_EVENT_MAP, ALERT_LEVEL_MAP, DOMAIN
+from .const import ALERT_EVENT_MAP, ALERT_LEVEL_MAP, DOMAIN, wind_cardinal
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .weather import format_condition
 
@@ -189,8 +198,186 @@ async def async_setup_entry(
         [
             SMNShortTermSummarySensor(coordinator, config_entry),
             SMNNationwideAvisosSensor(coordinator, config_entry),
+            SMNTemperatureSensor(coordinator, config_entry),
+            SMNFeelsLikeSensor(coordinator, config_entry),
+            SMNHumiditySensor(coordinator, config_entry),
+            SMNWindSpeedSensor(coordinator, config_entry),
+            SMNWindBearingSensor(coordinator, config_entry),
+            SMNTodayForecastSensor(coordinator, config_entry),
+            SMNTomorrowForecastSensor(coordinator, config_entry),
         ]
     )
+
+
+class _SMNSensorBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], SensorEntity):
+    """Shared device_info boilerplate for the standalone current/forecast sensors."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        unique_id_suffix: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{config_entry.entry_id}{unique_id_suffix}"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+
+class SMNTemperatureSensor(_SMNSensorBase):
+    """Current temperature, as its own entity (separate from the weather entity)."""
+
+    _attr_translation_key = "current_temperature"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_current_temperature")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.current_weather_data.get("temperature")
+
+
+class SMNFeelsLikeSensor(_SMNSensorBase):
+    """Current apparent ("feels like") temperature."""
+
+    _attr_translation_key = "feels_like_temperature"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_icon = "mdi:thermometer-lines"
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_feels_like_temperature")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.current_weather_data.get("feels_like")
+
+
+class SMNHumiditySensor(_SMNSensorBase):
+    """Current relative humidity."""
+
+    _attr_translation_key = "current_humidity"
+    _attr_device_class = SensorDeviceClass.HUMIDITY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_current_humidity")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.current_weather_data.get("humidity")
+
+
+class SMNWindSpeedSensor(_SMNSensorBase):
+    """Current wind speed."""
+
+    _attr_translation_key = "current_wind_speed"
+    _attr_device_class = SensorDeviceClass.WIND_SPEED
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfSpeed.KILOMETERS_PER_HOUR
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_current_wind_speed")
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.data.current_weather_data.get("wind_speed")
+
+
+class SMNWindBearingSensor(_SMNSensorBase):
+    """Current wind direction, as a 16-point compass label (e.g. "NE").
+
+    The degree value is kept as an attribute rather than the state, since a
+    compass label reads better on a dashboard/automation than a raw number.
+    """
+
+    _attr_translation_key = "current_wind_bearing"
+    _attr_icon = "mdi:compass-outline"
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_current_wind_bearing")
+
+    @property
+    def native_value(self) -> str | None:
+        return wind_cardinal(self.coordinator.data.current_weather_data.get("wind_deg"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        degrees = self.coordinator.data.current_weather_data.get("wind_deg")
+        return {"degrees": degrees} if degrees is not None else {}
+
+
+class _SMNDailyForecastSensor(_SMNSensorBase):
+    """Shared logic for a single day's forecast (today or tomorrow) as a sensor.
+
+    State is the day's condition (e.g. "sunny"); max/min temperature and the
+    rest of the day's data are exposed as attributes, since a sensor only
+    has one state value but dashboards/automations may want the numbers too.
+    """
+
+    _day_index: int
+
+    @property
+    def _day(self) -> dict[str, Any] | None:
+        forecast = self.coordinator.data.daily_forecast
+        if not forecast or len(forecast) <= self._day_index:
+            return None
+        return forecast[self._day_index]
+
+    @property
+    def native_value(self) -> str | None:
+        day = self._day
+        if day is None:
+            return None
+        return format_condition(day.get("weather"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        day = self._day
+        if day is None:
+            return {}
+        return {
+            "temp_max": day.get("temp_max"),
+            "temp_min": day.get("temp_min"),
+            "date": day.get("date"),
+        }
+
+
+class SMNTodayForecastSensor(_SMNDailyForecastSensor):
+    """Today's forecast condition, with max/min temperature as attributes."""
+
+    _attr_translation_key = "today_forecast"
+    _attr_icon = "mdi:weather-partly-cloudy"
+    _day_index = 0
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_today_forecast")
+
+
+class SMNTomorrowForecastSensor(_SMNDailyForecastSensor):
+    """Tomorrow's forecast condition, with max/min temperature as attributes."""
+
+    _attr_translation_key = "tomorrow_forecast"
+    _attr_icon = "mdi:weather-partly-cloudy"
+    _day_index = 1
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_tomorrow_forecast")
 
 
 class SMNShortTermSummarySensor(

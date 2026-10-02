@@ -146,6 +146,27 @@
       },
       "nationwide_avisos": {
         "name": "Nationwide avisos by province"
+      },
+      "current_temperature": {
+        "name": "Temperature"
+      },
+      "feels_like_temperature": {
+        "name": "Feels like"
+      },
+      "current_humidity": {
+        "name": "Humidity"
+      },
+      "current_wind_speed": {
+        "name": "Wind speed"
+      },
+      "current_wind_bearing": {
+        "name": "Wind direction"
+      },
+      "today_forecast": {
+        "name": "Today's forecast"
+      },
+      "tomorrow_forecast": {
+        "name": "Tomorrow's forecast"
       }
     }
   }
