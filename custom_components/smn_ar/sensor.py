@@ -302,7 +302,15 @@ class SMNTemperatureSensor(_SMNSensorBase):
 
 
 class SMNFeelsLikeSensor(_SMNSensorBase):
-    """Current apparent ("feels like") temperature."""
+    """Current apparent ("feels like") temperature.
+
+    SMN's own API returns `null` for this under most conditions (not just
+    extreme heat/cold), so when that happens the coordinator fills it in
+    with an estimate from temperature/humidity/wind (see
+    coordinator._estimate_feels_like) instead of leaving the sensor
+    permanently "Unknown" — `feels_like_is_estimate` says which case this
+    reading is, so it isn't confused with SMN's own number.
+    """
 
     _attr_translation_key = "feels_like_temperature"
     _attr_device_class = SensorDeviceClass.TEMPERATURE
@@ -316,6 +324,14 @@ class SMNFeelsLikeSensor(_SMNSensorBase):
     @property
     def native_value(self) -> float | None:
         return self.coordinator.data.current_weather_data.get("feels_like")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "is_estimate": self.coordinator.data.current_weather_data.get(
+                "feels_like_is_estimate", False
+            )
+        }
 
 
 class SMNHumiditySensor(_SMNSensorBase):

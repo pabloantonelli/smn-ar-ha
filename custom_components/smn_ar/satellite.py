@@ -866,11 +866,18 @@ def _center_on_shape(
         return frame
     cropped = frame.crop((x0, y0, x1, y1))
 
-    # Scale back up so the output keeps roughly the same resolution
-    # (and every frame of an animation — same rings/zoom, so the same
-    # bbox — comes out at the same size), capped at 2x to avoid visibly
-    # upscaling a already-small crop into mush.
-    scale = min(2.0, frame.width / cropped.width, frame.height / cropped.height)
+    # Scale back up so the output uses as much of the original frame's
+    # resolution as the crop's own aspect ratio allows — matching the
+    # *larger* dimension to the original frame (not the smaller, and
+    # uncapped) so a tall/narrow province like Córdoba still fills most of
+    # a square frame at full resolution instead of coming out small. An
+    # earlier version capped this at 2x to avoid upscaling blur, but that
+    # produced visibly small/blocky images for anything whose bbox was a
+    # small fraction of the fetched tile grid (routinely the case for the
+    # infrared layer, whose native GIBS resolution is already one zoom
+    # level coarser than GeoColor's) — a bit of LANCZOS softness beats a
+    # genuinely low-resolution image the UI then stretches anyway.
+    scale = max(frame.width / cropped.width, frame.height / cropped.height)
     if scale <= 1.01:
         return cropped
     new_size = (round(cropped.width * scale), round(cropped.height * scale))

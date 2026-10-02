@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
+import math
 from typing import Any
 
 import aiohttp
@@ -33,6 +34,30 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _estimate_feels_like(
+    temperature: float | None, humidity: float | None, wind_speed_kmh: float | None
+) -> float | None:
+    """Estimate apparent temperature when SMN doesn't send `feels_like` itself.
+
+    SMN's own API returns `null` for `feels_like` under many conditions
+    (not just extreme heat/cold — mild days get it too), so relying only
+    on their value leaves the sensor "Unknown" most of the time. This is
+    the Australian Bureau of Meteorology's general Apparent Temperature
+    formula (AT = T + 0.33*e - 0.70*ws - 4.00, e = vapor pressure from
+    humidity) — a standard approximation that accounts for both heat
+    (humidity) and wind-chill effects in one continuous formula, using
+    only the fields SMN always provides. It's an estimate, not SMN's own
+    calculation — callers should treat it as such (see `feels_like_is_estimate`
+    in current_weather_data).
+    """
+    if temperature is None or humidity is None or wind_speed_kmh is None:
+        return None
+    wind_ms = wind_speed_kmh / 3.6
+    vapor_pressure = (humidity / 100) * 6.105 * math.exp(17.27 * temperature / (237.7 + temperature))
+    apparent = temperature + 0.33 * vapor_pressure - 0.70 * wind_ms - 4.00
+    return round(apparent, 1)
 
 
 class ArgentinaSMNData:
@@ -148,13 +173,22 @@ class ArgentinaSMNData:
         wind_data = data.get("wind") or {}
         location_data = data.get("location") or {}
 
+        temperature = data.get("temperature")
+        humidity = data.get("humidity")
+        wind_speed = wind_data.get("speed")
+        feels_like = data.get("feels_like")
+        feels_like_is_estimate = feels_like is None
+        if feels_like_is_estimate:
+            feels_like = _estimate_feels_like(temperature, humidity, wind_speed)
+
         self.current_weather_data = {
-            "temperature": data.get("temperature"),
-            "feels_like": data.get("feels_like"),
-            "humidity": data.get("humidity"),
+            "temperature": temperature,
+            "feels_like": feels_like,
+            "feels_like_is_estimate": feels_like_is_estimate,
+            "humidity": humidity,
             "pressure": data.get("pressure"),
             "visibility": data.get("visibility"),
-            "wind_speed": wind_data.get("speed"),
+            "wind_speed": wind_speed,
             "wind_deg": wind_data.get("deg"),
             "weather": data.get("weather"),
             "name": location_data.get("name"),
