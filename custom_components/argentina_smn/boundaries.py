@@ -1,11 +1,24 @@
-"""Province outline overlay, drawn on radar/satellite mosaics.
+"""Province/department outline overlays, drawn on radar/satellite mosaics.
 
-Boundaries come from geoBoundaries.org's open ADM1 dataset for Argentina
-(CC BY 4.0, https://www.geoboundaries.org, sourced from IGN/Wikimedia),
-bundled locally as data/ar_provincias.geojson — simplified and trimmed to
-just name + geometry to keep it small (~80KB). Not fetched live: province
-borders don't change, so there's no reason to depend on an external
-service (or its availability) just to draw a fixed outline.
+Boundaries come from geoBoundaries.org's open ADM1 (provinces) and ADM2
+(departments/partidos) datasets for Argentina (CC BY 4.0,
+https://www.geoboundaries.org, sourced from IGN/Wikimedia), bundled locally
+as data/ar_provincias.geojson and data/ar_departamentos.geojson —
+simplified and trimmed to just name/province + geometry to keep them
+small. Not fetched live: these borders don't change, so there's no reason
+to depend on an external service (or its availability) just to draw a
+fixed outline.
+
+ADM2's department name isn't tied to its parent province in the raw data
+(only ADM1's own polygons are), so ar_departamentos.geojson's `province`
+field was resolved offline via a one-off spatial join (each department
+matched to whichever province polygon covers most of its area) before
+bundling — see the data/ directory for how it was built if it ever needs
+regenerating. A handful of edge cases (CABA's comunas, a couple of
+departments split awkwardly by the ADM1/ADM2 simplification not lining up
+exactly at the border) didn't resolve cleanly and are simply left out —
+cosmetic gaps in the subdivision overlay, not in the province/country
+outline itself.
 """
 from __future__ import annotations
 
@@ -19,6 +32,7 @@ from typing import Any
 _LOGGER = logging.getLogger(__name__)
 
 _DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "ar_provincias.geojson")
+_DEPARTMENTS_DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "ar_departamentos.geojson")
 
 
 def _normalize(name: str) -> str:
@@ -77,6 +91,69 @@ def get_country_rings() -> list[list[tuple[float, float]]]:
     return _load_provinces().get("argentina", [])
 
 
+def get_all_province_rings() -> list[list[tuple[float, float]]]:
+    """Return every province's rings flattened together (not the country outline).
+
+    Used to draw the internal province borders on the whole-country map —
+    each ring is still a closed loop drawn independently (see
+    draw_province_outline), so flattening every province into one list
+    doesn't connect unrelated provinces' lines to each other.
+    """
+    return [
+        ring
+        for name, rings in _load_provinces().items()
+        if name != "argentina"
+        for ring in rings
+    ]
+
+
+@functools.lru_cache(maxsize=1)
+def _load_departments() -> dict[str, list[list[tuple[float, float]]]]:
+    """Load the bundled department (ADM2) outlines, keyed by normalized province name.
+
+    Each province maps to every one of its departments' rings flattened
+    together (same reasoning as get_all_province_rings — rings are drawn
+    independently, so there's no need to keep departments distinguished
+    from each other, only from other provinces').
+    """
+    try:
+        with open(_DEPARTMENTS_DATA_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as err:
+        _LOGGER.warning("Could not load bundled department boundaries: %s", err)
+        return {}
+
+    by_province: dict[str, list[list[tuple[float, float]]]] = {}
+    for feature in data.get("features", []):
+        props = feature.get("properties") or {}
+        province = props.get("province")
+        geometry = feature.get("geometry") or {}
+        if not province or not geometry:
+            continue
+        geom_type = geometry.get("type")
+        coordinates = geometry.get("coordinates") or []
+        if geom_type == "Polygon":
+            polygons = [coordinates]
+        elif geom_type == "MultiPolygon":
+            polygons = coordinates
+        else:
+            continue
+        rings = [
+            [(lon, lat) for lon, lat in ring]
+            for polygon in polygons
+            for ring in polygon
+        ]
+        by_province.setdefault(_normalize(province), []).extend(rings)
+    return by_province
+
+
+def get_department_rings(province_name: str) -> list[list[tuple[float, float]]] | None:
+    """Return every department's rings for `province_name`, or None if not found."""
+    if not province_name:
+        return None
+    return _load_departments().get(_normalize(province_name))
+
+
 def get_bbox(rings: list[list[tuple[float, float]]]) -> tuple[float, float, float, float]:
     """Return (min_lat, min_lon, max_lat, max_lon) covering all of `rings`."""
     lats = [lat for ring in rings for _, lat in ring]
@@ -91,7 +168,7 @@ def draw_province_outline(
     origin_x: float,
     origin_y: float,
     color: tuple[int, int, int, int] = (205, 210, 215, 235),
-    width: int = 2,
+    width: int | None = None,
 ) -> None:
     """Draw a province's outline on `frame`, given a lon/lat -> world-pixel function.
 
@@ -109,6 +186,13 @@ def draw_province_outline(
     """
     from PIL import ImageDraw
 
+    if width is None:
+        # Scaled against the same 768px reference frame satellite.py's
+        # overlays use, so the outline doesn't look thin on the much
+        # bigger country/province mosaics (1536px+) or heavy on the small
+        # local camera.
+        width = max(2, min(5, round(2 * frame.width / 768)))
+
     draw = ImageDraw.Draw(frame, "RGBA")
     for ring in rings:
         points = []
@@ -121,6 +205,35 @@ def draw_province_outline(
             draw.line(closed, fill=color, width=width)
 
 
+def draw_subdivision_lines(
+    frame: Any,
+    rings: list[list[tuple[float, float]]],
+    deg2pixel: Any,
+    origin_x: float,
+    origin_y: float,
+    color: tuple[int, int, int, int] = (190, 195, 200, 150),
+) -> None:
+    """Draw internal borders (departments within a province, provinces within
+    the country) — thinner and more subtle than draw_province_outline's main
+    boundary, so the main outline still reads as "this is the area" while
+    the subdivisions give geographic reference without competing for
+    attention. No dark halo (unlike the main outline): with dozens of
+    departments on screen at once a halo on every line reads as clutter
+    rather than contrast.
+    """
+    from PIL import ImageDraw
+
+    width = max(1, round(1 * frame.width / 768))
+    draw = ImageDraw.Draw(frame, "RGBA")
+    for ring in rings:
+        points = []
+        for lon, lat in ring:
+            px, py = deg2pixel(lat, lon)
+            points.append((px - origin_x, py - origin_y))
+        if len(points) >= 2:
+            draw.line(points + [points[0]], fill=color, width=width)
+
+
 def draw_region_overlay(
     frame: Any,
     rings: list[list[tuple[float, float]]],
@@ -128,6 +241,7 @@ def draw_region_overlay(
     origin_x: float,
     origin_y: float,
     darken_alpha: int = 130,
+    subdivision_rings: list[list[tuple[float, float]]] | None = None,
 ) -> None:
     """Darken everything outside `rings` (a spotlight effect), then draw the outline.
 
@@ -156,4 +270,6 @@ def draw_region_overlay(
     overlay.putalpha(alpha)
     frame.alpha_composite(overlay)
 
+    if subdivision_rings:
+        draw_subdivision_lines(frame, subdivision_rings, deg2pixel, origin_x, origin_y)
     draw_province_outline(frame, rings, deg2pixel, origin_x, origin_y)

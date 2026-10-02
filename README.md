@@ -356,6 +356,31 @@ IGN/Wikimedia), empaquetado localmente en
 `custom_components/argentina_smn/data/ar_provincias.geojson` (~107KB) — no
 se consulta en vivo porque los límites provinciales no cambian.
 
+**Subdivisiones internas (línea fina gris, sin halo)**: además del contorno
+principal, "Satélite Argentina" dibuja las 24 provincias/CABA como líneas
+internas de referencia, y "Satélite provincia" dibuja los departamentos (o
+partidos, comunas, según cómo se llamen en cada provincia) de la provincia
+que corresponda — generalizado igual que el resto: si tu ubicación está en
+Buenos Aires, ves los partidos bonaerenses; en Mendoza, sus departamentos;
+etc. Vienen del dataset ADM2 de geoBoundaries, empaquetado como
+`data/ar_departamentos.geojson` (~450KB) con la provincia de cada
+departamento resuelta con un cruce espacial offline (ADM2 no trae esa
+relación). Quedan afuera unos pocos casos límite donde esa resolución no
+dio un resultado confiable (las comunas de CABA, por una imprecisión en el
+propio contorno de CABA del dataset) — no afecta el contorno principal,
+sólo que esos no muestran subdivisión interna.
+
+**Más cuadros y texto legible en cualquier tamaño**: las animaciones usan
+ahora 10 cuadros (~100 min) en vez de 6; está limitado por cuánto tile
+fetching es razonable hacer por refresh, no por disponibilidad de GIBS (que
+en teoría permite ir bastante más atrás en el tiempo). Y como "Satélite
+provincia"/"Satélite Argentina" arman una imagen mucho más grande (6×6
+tiles) que "Satélite" (3×3 tiles), el texto del horario, el contador de
+cuadros, la leyenda infrarroja y la etiqueta del pin escalan su tamaño en
+proporción al tamaño real de cada imagen — antes tenían un tamaño de letra
+fijo en píxeles, que se veía bien en una cámara y chico/apenas legible en
+la otra.
+
 #### Cómo obtener la URL del GIF animado para compartirlo
 
 La cámara "Satélite (animado)" (y, en general, cualquier `camera` de Home

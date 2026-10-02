@@ -22,7 +22,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .boundaries import get_country_rings, get_province_rings
+from .boundaries import (
+    get_all_province_rings,
+    get_country_rings,
+    get_department_rings,
+    get_province_rings,
+)
 from .const import (
     DOMAIN,
     GIBS_ATTRIBUTION,
@@ -462,6 +467,7 @@ class SMNSatelliteCountryCamera(_SMNSatelliteCameraBase):
             force_infrared=self._force_infrared,
             pin=(self._latitude, self._longitude),
             current_weather=current_weather,
+            subdivisions=get_all_province_rings(),
         )
 
 
@@ -520,6 +526,7 @@ class SMNSatelliteCountryAnimationCamera(_SMNSatelliteCameraBase):
             force_infrared=self._force_infrared,
             pin=(self._latitude, self._longitude),
             current_weather=current_weather,
+            subdivisions=get_all_province_rings(),
         )
 
 
@@ -581,6 +588,7 @@ class SMNSatelliteProvinceCamera(_SMNSatelliteCameraBase):
             force_infrared=self._force_infrared,
             pin=(self._latitude, self._longitude),
             current_weather=current_weather,
+            subdivisions=get_department_rings(province),
         )
 
 
@@ -651,4 +659,5 @@ class SMNSatelliteProvinceAnimationCamera(_SMNSatelliteCameraBase):
             force_infrared=self._force_infrared,
             pin=(self._latitude, self._longitude),
             current_weather=current_weather,
+            subdivisions=get_department_rings(province),
         )

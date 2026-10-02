@@ -17,7 +17,7 @@ from typing import Any
 import aiohttp
 import async_timeout
 
-from .boundaries import draw_region_overlay, get_bbox, get_country_rings, get_province_rings
+from .boundaries import draw_region_overlay, get_bbox, get_country_rings
 from .const import (
     GIBS_LAYER_GEOCOLOR,
     GIBS_LAYER_INFRARED,
@@ -316,6 +316,39 @@ def _draw_motion_arrow(frame: Any, vector: tuple[float, float]) -> None:
 _ARG_UTC_OFFSET = timedelta(hours=-3)
 _CAPTION_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf")
 
+# Reference width every overlay size below is tuned against: the local
+# fixed-zoom camera's frame (SATELLITE_TILE_GRID * SATELLITE_TILE_SIZE =
+# 3*256 = 768px). The country/province cameras use a 6-tile grid (1536px)
+# at that same tile size, so a fixed font/dot/swatch size that reads fine
+# on the small camera ends up tiny on those — and _apply_extra_zoom's
+# post-crop upscale doesn't help, since it resamples pixels, not overlays
+# drawn after it. Scaling every overlay by the frame's actual width keeps
+# text/dots/swatches a consistent *proportion* of the image across every
+# camera, instead of a fixed pixel size that only looks right on one of
+# them.
+_REFERENCE_FRAME_WIDTH = 768
+
+
+def _overlay_scale(frame: Any) -> float:
+    """How much bigger/smaller `frame` is than the reference 768px frame."""
+    return frame.width / _REFERENCE_FRAME_WIDTH
+
+
+def _scaled(base: float, scale: float, min_value: float, max_value: float) -> float:
+    return max(min_value, min(max_value, base * scale))
+
+
+def _load_font(size: int) -> Any:
+    from PIL import ImageFont
+
+    try:
+        return ImageFont.truetype(_CAPTION_FONT_PATH, size=size)
+    except OSError:
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:
+            return ImageFont.load_default()
+
 
 def _format_frame_caption(when: datetime) -> str:
     """Format a frame's timestamp as "HH:MM · hace N min" (Argentina local time).
@@ -345,31 +378,31 @@ def _draw_caption(
     """Draw a timestamp banner across the bottom of the frame.
 
     A single still image just gets the timestamp text. An animation frame
-    (when `frame_index`/`total_frames` are given) also gets a row of dots
-    spanning the full width — one per frame, oldest to newest left to
-    right, with the current frame's dot lit up — so the strip of frames
-    reads as an actual timeline/scrubber while it plays, not just a
-    changing clock in the corner.
+    (when `frame_index`/`total_frames` are given) also gets a timeline bar
+    below it — a connecting line with one tick per frame, the current one
+    highlighted and labeled "N/total" — so the strip of frames reads as an
+    actual scrubber while it plays, not just a changing clock in the
+    corner. Every size here scales with the frame's own width (see
+    _overlay_scale) so this looks the same proportionally whether it's
+    drawn on the small local camera or the much bigger country/province
+    mosaics.
     """
-    from PIL import ImageDraw, ImageFont
-
-    try:
-        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=22)
-    except OSError:
-        try:
-            font = ImageFont.load_default(size=22)
-        except TypeError:
-            font = ImageFont.load_default()
+    from PIL import ImageDraw
 
     draw = ImageDraw.Draw(frame, "RGBA")
-    padding = 10
-    text_height = font.size if hasattr(font, "size") else 22
+    scale = _overlay_scale(frame)
+
+    font_size = round(_scaled(22, scale, 20, 38))
+    padding = round(_scaled(10, scale, 10, 18))
+    font = _load_font(font_size)
+
     has_timeline = frame_index is not None and total_frames and total_frames > 1
-    dots_height = 14 if has_timeline else 0
-    bar_height = text_height + 2 * padding + dots_height
+    timeline_height = round(_scaled(22, scale, 20, 34)) if has_timeline else 0
+    text_height = font_size
+    bar_height = text_height + 2 * padding + timeline_height
 
     draw.rectangle(
-        [(0, frame.height - bar_height), (frame.width, frame.height)], fill=(0, 0, 0, 175)
+        [(0, frame.height - bar_height), (frame.width, frame.height)], fill=(0, 0, 0, 180)
     )
     draw.text(
         (padding, frame.height - bar_height + padding - 2),
@@ -379,19 +412,46 @@ def _draw_caption(
     )
 
     if has_timeline:
-        dots_y = frame.height - dots_height + 2
-        margin = padding
+        margin = round(_scaled(22, scale, 20, 40))
+        line_y = frame.height - timeline_height / 2 + round(_scaled(3, scale, 2, 6))
         span = frame.width - 2 * margin
         step = span / (total_frames - 1) if total_frames > 1 else 0
+
+        draw.line(
+            [(margin, line_y), (frame.width - margin, line_y)],
+            fill=(255, 255, 255, 110),
+            width=max(1, round(_scaled(2, scale, 1, 3))),
+        )
+
+        tick_radius = _scaled(3.5, scale, 3, 6)
+        current_radius = _scaled(6, scale, 5, 10)
         for i in range(total_frames):
             cx = margin + i * step
             if i == frame_index:
-                radius = 5
-                color = (255, 220, 60, 255)
+                draw.ellipse(
+                    [
+                        (cx - current_radius, line_y - current_radius),
+                        (cx + current_radius, line_y + current_radius),
+                    ],
+                    fill=(255, 220, 60, 255),
+                    outline=(0, 0, 0, 200),
+                    width=max(1, round(scale)),
+                )
             else:
-                radius = 3
-                color = (255, 255, 255, 130)
-            draw.ellipse([(cx - radius, dots_y - radius), (cx + radius, dots_y + radius)], fill=color)
+                draw.ellipse(
+                    [(cx - tick_radius, line_y - tick_radius), (cx + tick_radius, line_y + tick_radius)],
+                    fill=(255, 255, 255, 170),
+                )
+
+        counter = f"{frame_index + 1}/{total_frames}"
+        counter_font = _load_font(round(_scaled(16, scale, 15, 26)))
+        counter_width = draw.textlength(counter, font=counter_font)
+        draw.text(
+            (frame.width - padding - counter_width, frame.height - bar_height + padding - 2),
+            counter,
+            font=counter_font,
+            fill=(255, 220, 60, 255),
+        )
 
 
 _IR_LEGEND_STEPS = [
@@ -414,33 +474,36 @@ def _draw_ir_legend(frame: Any) -> None:
     would imply. Good enough to make the palette legible without
     overstating precision this code can't verify.
     """
-    from PIL import ImageDraw, ImageFont
-
-    try:
-        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=13)
-    except OSError:
-        try:
-            font = ImageFont.load_default(size=13)
-        except TypeError:
-            font = ImageFont.load_default()
+    from PIL import ImageDraw
 
     draw = ImageDraw.Draw(frame, "RGBA")
-    swatch = 14
-    row_height = swatch + 6
-    padding = 8
+    scale = _overlay_scale(frame)
+
+    font_size = round(_scaled(13, scale, 14, 26))
+    font = _load_font(font_size)
+    swatch = round(_scaled(14, scale, 15, 30))
+    gap = round(_scaled(8, scale, 8, 16))
+    padding = round(_scaled(10, scale, 10, 20))
+    row_height = swatch + round(_scaled(6, scale, 6, 12))
+
     label_widths = [draw.textlength(label, font=font) for _, label in _IR_LEGEND_STEPS]
-    box_width = swatch + 8 + max(label_widths) + 2 * padding
+    box_width = swatch + gap + max(label_widths) + 2 * padding
     box_height = len(_IR_LEGEND_STEPS) * row_height + padding
 
     x0, y0 = frame.width - box_width, 0
-    draw.rectangle([(x0, y0), (frame.width, y0 + box_height)], fill=(0, 0, 0, 150))
+    draw.rectangle([(x0, y0), (frame.width, y0 + box_height)], fill=(0, 0, 0, 165))
     for i, (color, label) in enumerate(_IR_LEGEND_STEPS):
         row_y = y0 + padding // 2 + i * row_height
         draw.rectangle(
-            [(x0 + padding, row_y), (x0 + padding + swatch, row_y + swatch)], fill=color
+            [(x0 + padding, row_y), (x0 + padding + swatch, row_y + swatch)],
+            fill=color,
+            outline=(255, 255, 255, 90),
         )
         draw.text(
-            (x0 + padding + swatch + 8, row_y - 1), label, font=font, fill=(255, 255, 255, 255)
+            (x0 + padding + swatch + gap, row_y + (swatch - font_size) / 2 - 1),
+            label,
+            font=font,
+            fill=(255, 255, 255, 255),
         )
 
 
@@ -463,23 +526,26 @@ def _draw_location_pin(
     fuller forecast strip radar.py draws), since these frames are already
     busier with the outline/legend/timeline overlays.
     """
-    from PIL import ImageDraw, ImageFont
+    from PIL import ImageDraw
 
     px, py = _deg2pixel(latitude, longitude, zoom)
     x, y = px - origin_x, py - origin_y
     if not (-20 <= x <= frame.width + 20 and -20 <= y <= frame.height + 20):
         return  # Off-frame (e.g. a province view where the point falls outside it).
 
-    # Deliberately tiny — a marker that helps locate the point without
-    # covering meaningful area of the image, especially on an animation
-    # where it sits on every frame.
     draw = ImageDraw.Draw(frame, "RGBA")
-    radius = 3.5
+    scale = _overlay_scale(frame)
+
+    # Deliberately small relative to the frame — a marker that helps locate
+    # the point without covering meaningful area of the image, especially
+    # on an animation where it sits on every frame. Still scaled a little
+    # with the frame so it isn't a sub-pixel speck on the big country view.
+    radius = _scaled(3.5, scale, 3.5, 6)
     draw.ellipse(
         [(x - radius, y - radius), (x + radius, y + radius)],
         fill=(255, 220, 60, 255),
-        outline=(30, 30, 30, 220),
-        width=1,
+        outline=(20, 20, 20, 230),
+        width=max(1, round(scale)),
     )
 
     temperature = (current_weather or {}).get("temperature")
@@ -487,20 +553,28 @@ def _draw_location_pin(
         return
     label = f"{temperature:.0f}°C"
 
-    try:
-        font = ImageFont.truetype(_CAPTION_FONT_PATH, size=12)
-    except OSError:
-        try:
-            font = ImageFont.load_default(size=12)
-        except TypeError:
-            font = ImageFont.load_default()
+    font_size = round(_scaled(13, scale, 13, 22))
+    font = _load_font(font_size)
+    pad_x, pad_y = round(_scaled(4, scale, 4, 7)), round(_scaled(2, scale, 2, 4))
 
     text_width = draw.textlength(label, font=font)
-    label_x, label_y = x + radius + 4, y - 8
-    draw.rectangle(
-        [(label_x - 2, label_y - 1), (label_x + text_width + 2, label_y + 14)],
-        fill=(0, 0, 0, 150),
-    )
+    text_height = font_size
+    label_x = x + radius + round(_scaled(4, scale, 4, 7))
+    label_y = y - text_height / 2
+
+    box = [
+        (label_x - pad_x, label_y - pad_y),
+        (label_x + text_width + pad_x, label_y + text_height + pad_y),
+    ]
+    # If the label would run off the right edge, flip it to the pin's left.
+    if box[1][0] > frame.width:
+        label_x = x - radius - round(_scaled(4, scale, 4, 7)) - text_width
+        box = [
+            (label_x - pad_x, label_y - pad_y),
+            (label_x + text_width + pad_x, label_y + text_height + pad_y),
+        ]
+
+    draw.rectangle(box, fill=(0, 0, 0, 180), outline=(255, 255, 255, 60))
     draw.text((label_x, label_y), label, font=font, fill=(255, 255, 255, 255))
 
 
@@ -773,6 +847,7 @@ async def build_region_snapshot_jpeg(
     force_infrared: bool = False,
     pin: tuple[float, float] | None = None,
     current_weather: dict[str, Any] | None = None,
+    subdivisions: list[list[tuple[float, float]]] | None = None,
 ) -> bytes | None:
     """Build a static JPEG covering a whole area (a province, or all of Argentina).
 
@@ -787,6 +862,8 @@ async def build_region_snapshot_jpeg(
     boundaries.draw_region_overlay). `pin` is the configured location's
     (latitude, longitude), marked with `current_weather`'s temperature —
     left out (None) if the point wouldn't fall inside this frame anyway.
+    `subdivisions` (optional) draws internal borders inside `rings` —
+    departments for a province camera, provinces for the country camera.
     """
     if not rings:
         return None
@@ -803,7 +880,12 @@ async def build_region_snapshot_jpeg(
         session, layer, matrix_set, latest_time, zoom, center_x, center_y
     )
     draw_region_overlay(
-        mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
+        mosaic,
+        rings,
+        lambda lat, lon: _deg2pixel(lat, lon, zoom),
+        origin_x,
+        origin_y,
+        subdivision_rings=subdivisions,
     )
     if pin:
         _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)
@@ -825,12 +907,14 @@ async def build_region_animation_gif(
     force_infrared: bool = False,
     pin: tuple[float, float] | None = None,
     current_weather: dict[str, Any] | None = None,
+    subdivisions: list[list[tuple[float, float]]] | None = None,
 ) -> bytes | None:
     """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES frames for a whole area.
 
     Same idea as build_satellite_animation_gif, but zoomed to fit `rings`'
     bounding box (see build_region_snapshot_jpeg) instead of a fixed zoom
-    around a lat/lon — used for the province animation camera.
+    around a lat/lon — used for the province animation camera. `subdivisions`
+    is the same as in build_region_snapshot_jpeg (departments/provinces).
     """
     if not rings:
         return None
@@ -855,7 +939,12 @@ async def build_region_animation_gif(
     zoomed: list[Any] = []
     for i, (mosaic, when) in enumerate(kept):
         draw_region_overlay(
-            mosaic, rings, lambda lat, lon: _deg2pixel(lat, lon, zoom), origin_x, origin_y
+            mosaic,
+            rings,
+            lambda lat, lon: _deg2pixel(lat, lon, zoom),
+            origin_x,
+            origin_y,
+            subdivision_rings=subdivisions,
         )
         if pin:
             _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)

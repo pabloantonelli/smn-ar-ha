@@ -132,7 +132,7 @@ SATELLITE_TILE_GRID: Final = 3  # 3x3 tiles (~700km across at zoom 5)
 SATELLITE_TILE_SIZE: Final = 256
 SATELLITE_UPDATE_INTERVAL: Final = 600  # 10 min, matches GIBS' frame cadence
 # How many past 10-min frames the animated GIF camera stitches together.
-SATELLITE_ANIMATION_FRAMES: Final = 6  # last hour
+SATELLITE_ANIMATION_FRAMES: Final = 10  # last ~100 min (GIBS' 10-min cadence)
 SATELLITE_ANIMATION_UPDATE_INTERVAL: Final = 1200  # 20 min: N tile fetches, expensive
 
 # GIBS' max zoom level per layer — same numbers as GIBS_MATRIX_SET_*, kept
