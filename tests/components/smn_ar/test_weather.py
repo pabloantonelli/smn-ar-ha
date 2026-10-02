@@ -15,7 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant
 
-from custom_components.argentina_smn.const import DOMAIN
+from custom_components.smn_ar.const import DOMAIN
 
 
 @pytest.fixture
@@ -47,9 +47,9 @@ async def test_weather_entity_state(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -62,7 +62,7 @@ async def test_weather_entity_state(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
@@ -91,9 +91,9 @@ async def test_weather_entity_forecast(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -106,7 +106,7 @@ async def test_weather_entity_forecast(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
@@ -125,7 +125,7 @@ async def test_weather_condition_mapping(
     hass: HomeAssistant,
 ) -> None:
     """Test weather condition ID mapping."""
-    from custom_components.argentina_smn.weather import format_condition
+    from custom_components.smn_ar.weather import format_condition
 
     # Test day conditions
     assert format_condition({"id": 3, "description": "Despejado"}, sun_is_up=True) == ATTR_CONDITION_SUNNY
@@ -154,9 +154,9 @@ async def test_weather_entity_name(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -169,7 +169,7 @@ async def test_weather_entity_name(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()

@@ -21,7 +21,7 @@ from homeassistant.components.weather import (
     ATTR_FORECAST_TIME,
 )
 
-DOMAIN: Final = "argentina_smn"
+DOMAIN: Final = "smn_ar"
 
 # Fired whenever the set of avisos a muy corto plazo for the configured
 # location changes (a new one appears, or an existing one is lifted) — lets

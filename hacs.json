@@ -2,7 +2,7 @@
   "name": "SMN - Servicio Meteorológico Nacional",
   "country": "AR",
   "content_in_root": false,
-  "filename": "argentina_smn",
+  "filename": "smn_ar",
   "render_readme": true,
   "homeassistant": "2024.1.0"
 }

@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant
 
-from custom_components.argentina_smn.const import DOMAIN
+from custom_components.smn_ar.const import DOMAIN
 
 
 @pytest.fixture
@@ -39,16 +39,16 @@ async def test_setup_entry(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData.fetch_data",
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData.fetch_data",
         new_callable=AsyncMock,
     ) as mock_fetch:
         mock_token_class.return_value = mock_token_manager
         mock_fetch.return_value = None
 
         with patch(
-            "custom_components.argentina_smn.async_setup_entry", return_value=True
+            "custom_components.smn_ar.async_setup_entry", return_value=True
         ):
             assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
             await hass.async_block_till_done()
@@ -67,17 +67,17 @@ async def test_unload_entry(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData.fetch_data",
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData.fetch_data",
         new_callable=AsyncMock,
     ):
         mock_token_class.return_value = mock_token_manager
 
         with patch(
-            "custom_components.argentina_smn.async_setup_entry", return_value=True
+            "custom_components.smn_ar.async_setup_entry", return_value=True
         ), patch(
-            "custom_components.argentina_smn.async_unload_entry", return_value=True
+            "custom_components.smn_ar.async_unload_entry", return_value=True
         ):
             assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
             await hass.async_block_till_done()
@@ -97,9 +97,9 @@ async def test_service_get_alerts(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
         mock_data_instance = mock_data_class.return_value
@@ -107,7 +107,7 @@ async def test_service_get_alerts(
         mock_data_instance.fetch_data = AsyncMock()
 
         # Import after patches are set up
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
@@ -136,9 +136,9 @@ async def test_service_get_alerts_for_location(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class, patch(
         "aiohttp.ClientSession.get"
     ) as mock_get:
@@ -155,7 +155,7 @@ async def test_service_get_alerts_for_location(
         mock_get.return_value.__aenter__ = AsyncMock(return_value=mock_response)
         mock_get.return_value.__aexit__ = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()

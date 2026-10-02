@@ -8,7 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME, STATE_ON, STATE_OFF
 from homeassistant.core import HomeAssistant
 
-from custom_components.argentina_smn.const import DOMAIN
+from custom_components.smn_ar.const import DOMAIN
 
 
 @pytest.fixture
@@ -41,9 +41,9 @@ async def test_alert_sensor_on(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -56,7 +56,7 @@ async def test_alert_sensor_on(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
@@ -81,9 +81,9 @@ async def test_alert_sensor_off(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -96,7 +96,7 @@ async def test_alert_sensor_off(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
@@ -119,9 +119,9 @@ async def test_event_alert_sensors(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -134,7 +134,7 @@ async def test_event_alert_sensors(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
@@ -170,9 +170,9 @@ async def test_shortterm_alert_sensor(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -185,7 +185,7 @@ async def test_shortterm_alert_sensor(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()
@@ -211,9 +211,9 @@ async def test_alert_sensor_icons(
     mock_config_entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_token_class, patch(
-        "custom_components.argentina_smn.coordinator.ArgentinaSMNData"
+        "custom_components.smn_ar.coordinator.ArgentinaSMNData"
     ) as mock_data_class:
         mock_token_class.return_value = mock_token_manager
 
@@ -226,7 +226,7 @@ async def test_alert_sensor_icons(
         mock_data_instance.heat_warnings = {}
         mock_data_instance.fetch_data = AsyncMock()
 
-        from custom_components.argentina_smn import async_setup_entry
+        from custom_components.smn_ar import async_setup_entry
 
         assert await async_setup_entry(hass, mock_config_entry)
         await hass.async_block_till_done()

@@ -2,7 +2,7 @@
 
 Resuelve el challenge de Cloudflare de `www.smn.gob.ar` con Chromium
 headless + Selenium, mantiene un JWT vigente, y expone un proxy HTTP local
-de la API JSON del SMN para que la integración `argentina_smn` no tenga
+de la API JSON del SMN para que la integración `smn_ar` no tenga
 que lidiar con eso.
 
 ## Endpoints
@@ -32,7 +32,7 @@ este tipo. Seguir invirtiendo en técnicas más agresivas para esquivar la
 detección de bots de Cloudflare específicamente para esto no es algo que
 valga la pena perseguir para una integración personal.
 
-La integración (`custom_components/argentina_smn`) sí tiene una entidad
+La integración (`custom_components/smn_ar`) sí tiene una entidad
 `camera` de radar animado, pero la arma con la
 [API pública de RainViewer](https://www.rainviewer.com/api.html)
 directamente desde Home Assistant — no pasa por este proxy ni depende de

@@ -416,7 +416,7 @@ def mock_shortterm_alerts() -> list:
 def mock_token_manager() -> Generator[MagicMock, None, None]:
     """Mock the SMN token manager."""
     with patch(
-        "custom_components.argentina_smn.coordinator.SMNTokenManager"
+        "custom_components.smn_ar.coordinator.SMNTokenManager"
     ) as mock_manager:
         manager_instance = mock_manager.return_value
         manager_instance.get_token = AsyncMock(

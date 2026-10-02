@@ -8,7 +8,7 @@ from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.argentina_smn.const import DOMAIN
+from custom_components.smn_ar.const import DOMAIN
 
 
 @pytest.mark.asyncio
@@ -27,9 +27,9 @@ async def test_form_home_location(
     assert result["step_id"] == "user"
 
     with patch(
-        "custom_components.argentina_smn.config_flow.ArgentinaSMNDataUpdateCoordinator"
+        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
     ) as mock_coordinator, patch(
-        "custom_components.argentina_smn.async_setup_entry", return_value=True
+        "custom_components.smn_ar.async_setup_entry", return_value=True
     ):
         mock_coordinator_instance = mock_coordinator.return_value
         mock_coordinator_instance._smn_data._token_manager = mock_token_manager
@@ -69,9 +69,9 @@ async def test_form_custom_location(
     assert result["step_id"] == "user"
 
     with patch(
-        "custom_components.argentina_smn.config_flow.ArgentinaSMNDataUpdateCoordinator"
+        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
     ) as mock_coordinator, patch(
-        "custom_components.argentina_smn.async_setup_entry", return_value=True
+        "custom_components.smn_ar.async_setup_entry", return_value=True
     ):
         mock_coordinator_instance = mock_coordinator.return_value
         mock_coordinator_instance._smn_data._token_manager = mock_token_manager
@@ -127,7 +127,7 @@ async def test_form_already_configured(
     assert result["type"] == FlowResultType.FORM
 
     with patch(
-        "custom_components.argentina_smn.config_flow.ArgentinaSMNDataUpdateCoordinator"
+        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
     ) as mock_coordinator:
         mock_coordinator_instance = mock_coordinator.return_value
         mock_coordinator_instance._smn_data._token_manager = mock_token_manager
@@ -159,7 +159,7 @@ async def test_form_api_error(hass: HomeAssistant, mock_token_manager) -> None:
     assert result["type"] == FlowResultType.FORM
 
     with patch(
-        "custom_components.argentina_smn.config_flow.ArgentinaSMNDataUpdateCoordinator"
+        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
     ) as mock_coordinator:
         mock_coordinator_instance = mock_coordinator.return_value
         mock_coordinator_instance._smn_data._token_manager = mock_token_manager

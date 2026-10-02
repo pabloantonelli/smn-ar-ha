@@ -4,6 +4,16 @@ Integración de Home Assistant para el clima, pronóstico y alertas del
 [Servicio Meteorológico Nacional](https://www.smn.gob.ar) de Argentina, más
 un add-on que resuelve el acceso a su API no oficial.
 
+> **⚠️ Cambio importante (v3.0.0): el `domain` pasó de `argentina_smn` a
+> `smn_ar`.** Otro proyecto independiente (sin relación con este repo)
+> registró ese mismo `domain` e intentó sumarlo como integración *core* de
+> Home Assistant; para evitar que dos integraciones distintas choquen bajo
+> el mismo `domain` si alguien instala ambas, esta la renombró. Si ya
+> tenías la integración instalada: desinstalala (HACS → tres puntos →
+> Eliminar) y volvé a instalar/configurar desde cero — los `entity_id`
+> existentes (`weather.tu_nombre`, `sensor.tu_nombre_...`, etc.) no migran
+> solos al nuevo `domain`, hay que recrear la config entry.
+
 ## Por qué dos componentes
 
 `smn.gob.ar` no tiene una API pública. Su frontend consume una API JSON no
@@ -15,7 +25,7 @@ Assistant, así que se separa en dos partes:
 - **`addons/smn_proxy`** — add-on de Home Assistant OS (Chromium headless +
   Selenium) que resuelve el challenge, mantiene el JWT vigente, y expone un
   proxy HTTP local con la API del SMN.
-- **`custom_components/argentina_smn`** — la integración de HA (weather,
+- **`custom_components/smn_ar`** — la integración de HA (weather,
   binary_sensors de alertas, sensor de resumen en texto, cámara de radar),
   que habla con ese proxy local en vez de pegarle directo a SMN.
 
@@ -205,7 +215,7 @@ suficiente dentro del horizonte de pronóstico de SMN, `state` queda
 nunca", sólo que no hay nada así de probable todavía en el pronóstico
 disponible.
 
-### Evento `argentina_smn_shortterm_alert_changed`: avisos a muy corto plazo en tiempo real
+### Evento `smn_ar_shortterm_alert_changed`: avisos a muy corto plazo en tiempo real
 
 Además del sensor "Pronóstico de corto plazo" (que hay que consultar o
 mirar cuando cambia su `state`), la integración dispara un **evento de Home
@@ -215,7 +225,7 @@ Sirve para que una automatización reaccione al instante (ej. enviar una
 notificación push) en vez de tener que sondear el sensor.
 
 Se puede escuchar con un trigger de tipo **Evento**, evento
-`argentina_smn_shortterm_alert_changed`. Datos del evento:
+`smn_ar_shortterm_alert_changed`. Datos del evento:
 
 ```yaml
 entry_id: "<id de esta instancia de la integración>"
@@ -240,7 +250,7 @@ Ejemplo de automatización (notificar sólo cuando aparece un aviso nuevo):
 ```yaml
 trigger:
   - trigger: event
-    event_type: argentina_smn_shortterm_alert_changed
+    event_type: smn_ar_shortterm_alert_changed
 condition:
   - condition: template
     value_template: "{{ trigger.event.data.added | length > 0 }}"
@@ -373,7 +383,7 @@ geográfica:
 Los contornos vienen del dataset abierto ADM1/ADM0 de
 [**geoBoundaries.org**](https://www.geoboundaries.org) (CC BY 4.0, fuente
 IGN/Wikimedia), empaquetado localmente en
-`custom_components/argentina_smn/data/ar_provincias.geojson` (~107KB) — no
+`custom_components/smn_ar/data/ar_provincias.geojson` (~107KB) — no
 se consulta en vivo porque los límites provinciales no cambian.
 
 **Subdivisiones internas (línea fina gris, sin halo)**: además del contorno
@@ -472,7 +482,7 @@ integración.
 
 El placeholder gris "icon not available" que se ve en la tarjeta de la
 integración se soluciona con
-`custom_components/argentina_smn/brand/{icon.png,logo.png}`, que ya están
+`custom_components/smn_ar/brand/{icon.png,logo.png}`, que ya están
 en este repo. Desde Home Assistant 2026.3 las integraciones custom pueden
 traer su propio ícono así, con prioridad automática sobre el CDN de
 [`home-assistant/brands`](https://github.com/home-assistant/brands) — no

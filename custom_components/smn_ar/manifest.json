@@ -1,5 +1,5 @@
 {
-  "domain": "argentina_smn",
+  "domain": "smn_ar",
   "name": "SMN - Servicio Meteorológico Nacional",
   "codeowners": ["@pabloantonelli"],
   "config_flow": true,
@@ -8,5 +8,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/pabloantonelli/smn-ar-ha/issues",
   "requirements": ["Pillow>=10.0.0", "numpy>=1.24.0"],
-  "version": "2.0.0"
+  "version": "3.0.0"
 }
