@@ -138,6 +138,24 @@
       },
       "satellite_infrared_animation": {
         "name": "Satellite (infrared, animated)"
+      },
+      "satellite_video": {
+        "name": "Satellite (video)"
+      },
+      "satellite_province_video": {
+        "name": "Satellite (province, video)"
+      },
+      "satellite_country_video": {
+        "name": "Satellite Argentina (video)"
+      },
+      "satellite_country_infrared_video": {
+        "name": "Satellite Argentina Infrared (video)"
+      },
+      "satellite_province_infrared_video": {
+        "name": "Satellite (province, infrared, video)"
+      },
+      "satellite_infrared_video": {
+        "name": "Satellite (infrared, video)"
       }
     },
     "sensor": {

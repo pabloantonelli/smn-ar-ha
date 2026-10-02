@@ -69,17 +69,20 @@ filtrar por el nombre del dispositivo o una palabra del nombre visible.
 | `sensor` | Próxima lluvia | Cuándo es el próximo período con probabilidad de lluvia relevante | 30 min |
 | `camera` | Radar | Foto del radar de precipitación, con clima actual y zonas de alerta | 10 min |
 | `camera` | Satélite | Foto satelital alrededor de tu ubicación, con flecha de deriva de nubes | 10 min |
-| `camera` | Satélite Infrarrojo | Igual, en infrarrojo (de noche y siempre útil para ver tormentas) | 10 min |
+| `camera` | Satélite Infrarrojo | Igual, en infrarrojo (ideal para ver la estructura de las tormentas) | 10 min |
 | `camera` | Satélite (animado) | GIF de la última hora y media de imágenes satelitales | 20 min |
 | `camera` | Satélite Infrarrojo (animado) | Igual, en infrarrojo | 20 min |
+| `camera` | Satélite (video) / Satélite Infrarrojo (video) | La misma animación como video MP4 fluido, para mandar por WhatsApp | 20 min |
 | `camera` | Satélite Argentina | Foto satelital de todo el país | 15 min |
 | `camera` | Satélite Argentina Infrarrojo | Igual, en infrarrojo | 15 min |
 | `camera` | Satélite Argentina (animado) | GIF de todo el país | 30 min |
 | `camera` | Satélite Argentina Infrarrojo (animado) | Igual, en infrarrojo | 30 min |
+| `camera` | Satélite Argentina (video) / Satélite Argentina Infrarrojo (video) | Video MP4 de todo el país | 30 min |
 | `camera` | Satélite provincia | Foto satelital de tu provincia (según la resuelve SMN) | 15 min |
 | `camera` | Satélite provincia Infrarrojo | Igual, en infrarrojo | 15 min |
 | `camera` | Satélite provincia (animado) | GIF de tu provincia | 30 min |
 | `camera` | Satélite provincia Infrarrojo (animado) | Igual, en infrarrojo | 30 min |
+| `camera` | Satélite provincia (video) / Satélite provincia Infrarrojo (video) | Video MP4 de tu provincia | 30 min |
 
 ### `weather`: clima actual y pronóstico
 
@@ -188,7 +191,7 @@ Foto con el radar de precipitación de tu zona (~300km alrededor),
 temperatura y pronóstico de las próximas horas, y cualquier zona de
 alerta activa cercana dibujada sobre el mapa.
 
-### `camera` "Satélite" / "Satélite Argentina" / "Satélite provincia" (y sus variantes infrarrojo/animado)
+### `camera` "Satélite" / "Satélite Argentina" / "Satélite provincia" (y sus variantes infrarrojo/animado/video)
 
 Imágenes reales del satélite geoestacionario GOES-East:
 
@@ -200,12 +203,18 @@ Imágenes reales del satélite geoestacionario GOES-East:
   (en el mapa de Argentina) o los departamentos/partidos (en el de tu
   provincia) dibujados como referencia. "Satélite provincia" usa la
   provincia que el propio SMN resuelve para tu ubicación.
-- **Infrarrojo**: la misma vista, pero con la capa de infrarrojo en vez
-  de color real — útil de noche (el color real se ve negro) y en general
-  para ver mejor la estructura de una tormenta. Trae una leyenda de
-  colores en la esquina.
-- **Animado**: un GIF con los últimos ~100 minutos, pensado para
-  compartirse como **URL** (ver abajo), no como adjunto de una foto.
+- Las versiones normales usan **color real**, que de noche pasa solo a
+  una vista nocturna (nubes en gris sobre las luces de las ciudades).
+- **Infrarrojo**: la misma vista con la capa infrarroja, que muestra la
+  temperatura de los topes de nube — ideal para ver la estructura e
+  intensidad de una tormenta. Trae una leyenda de colores en la esquina.
+- **Animado**: un GIF con los últimos ~100 minutos, para ver en el
+  dashboard o compartir como URL (ver abajo).
+- **Video**: la misma animación como **video MP4 fluido** (con cuadros
+  intermedios), más liviano que el GIF. Es el formato que WhatsApp usa
+  para sus "GIFs": las integraciones de notificación que mandan la
+  entidad de cámara como video la envían animada. No se ve en una
+  tarjeta de cámara del dashboard (para eso está la versión animada).
 
 En todas, un pin marca tu ubicación exacta con la temperatura actual, y
 las animaciones muestran una línea de tiempo abajo indicando qué tan
