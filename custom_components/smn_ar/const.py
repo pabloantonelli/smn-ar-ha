@@ -146,10 +146,6 @@ SATELLITE_ANIMATION_LOOKBACK_BUFFER: Final = 6
 # levels numerically to fit a province/country bounding box.
 GIBS_MAX_ZOOM_GEOCOLOR: Final = 7
 GIBS_MAX_ZOOM_INFRARED: Final = 6
-# Wide-area cameras (whole province / whole country): zoom is computed per
-# request to fit the area's bounding box, so these only cap the tile grid
-# size (cost) and how much of the grid the area is allowed to fill.
-SATELLITE_REGION_TILE_GRID: Final = 6
 SATELLITE_REGION_UPDATE_INTERVAL: Final = 900  # 15 min
 SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL: Final = 1800  # 30 min: N frames × N tiles, pricier still
 

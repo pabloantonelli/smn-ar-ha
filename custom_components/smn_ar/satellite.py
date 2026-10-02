@@ -28,7 +28,6 @@ from .const import (
     GIBS_TILE_URL_TEMPLATE,
     SATELLITE_ANIMATION_FRAMES,
     SATELLITE_ANIMATION_LOOKBACK_BUFFER,
-    SATELLITE_REGION_TILE_GRID,
     SATELLITE_TILE_GRID,
     SATELLITE_TILE_SIZE,
     SATELLITE_ZOOM,
@@ -91,33 +90,6 @@ def _smooth_if_infrared(mosaic: Any, layer: str) -> Any:
     return mosaic.filter(ImageFilter.GaussianBlur(radius=_INFRARED_BLUR_RADIUS))
 
 
-def _zoom_for_bbox(
-    min_lat: float,
-    min_lon: float,
-    max_lat: float,
-    max_lon: float,
-    tile_grid: int,
-    max_zoom: int,
-    fill_factor: float = 0.9,
-) -> int:
-    """Find the highest zoom level at which the bbox still fits the tile grid.
-
-    Searches from max_zoom down to 0 and picks the first level where the
-    bbox's projected pixel span fits within `tile_grid` tiles times
-    `fill_factor`. A lower fill_factor (e.g. the default 0.9) leaves a
-    margin so the outline isn't flush against the edge; a higher one
-    (>1) deliberately lets the bbox exceed the grid — corners get
-    cropped — in exchange for a noticeably tighter zoom.
-    """
-    budget = tile_grid * SATELLITE_TILE_SIZE * fill_factor
-    for zoom in range(max_zoom, -1, -1):
-        x0, y0 = _deg2pixel(max_lat, min_lon, zoom)
-        x1, y1 = _deg2pixel(min_lat, max_lon, zoom)
-        if abs(x1 - x0) <= budget and abs(y1 - y0) <= budget:
-            return zoom
-    return 0
-
-
 async def _resolve_latest_frame_time(
     session: aiohttp.ClientSession, layer: str, matrix_set: str
 ) -> datetime | None:
@@ -176,14 +148,36 @@ async def _fetch_tile(
     from PIL import Image
 
     try:
-        async with async_timeout.timeout(6):
-            resp = await session.get(url)
-            resp.raise_for_status()
-            tile_bytes = await resp.read()
+        async with _tile_semaphore():
+            async with async_timeout.timeout(15):
+                resp = await session.get(url)
+                resp.raise_for_status()
+                tile_bytes = await resp.read()
         return Image.open(io.BytesIO(tile_bytes)).convert("RGBA")
     except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as err:
         _LOGGER.debug("Error fetching GIBS tile %s: %s", url, err)
         return None
+
+
+_MAX_CONCURRENT_TILE_FETCHES = 12
+_TILE_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _tile_semaphore() -> asyncio.Semaphore:
+    """Shared cap on in-flight GIBS tile requests across every camera.
+
+    An animation used to fire every tile of every frame at once (hundreds
+    for the country camera) with a short per-request timeout — on a slower
+    link the timeout expired while requests were still queued in the
+    connection pool, those frames got dropped as incomplete, and the GIF
+    ended up with one frame (i.e. not animated). Queuing them behind a
+    semaphore means the timeout only starts once a request is actually
+    sent.
+    """
+    global _TILE_SEMAPHORE  # noqa: PLW0603
+    if _TILE_SEMAPHORE is None:
+        _TILE_SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENT_TILE_FETCHES)
+    return _TILE_SEMAPHORE
 
 
 async def _fetch_mosaic(
@@ -344,27 +338,14 @@ _CAPTION_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSan
 
 # Reference width every overlay size below is tuned against: the local
 # fixed-zoom camera's frame (SATELLITE_TILE_GRID * SATELLITE_TILE_SIZE =
-# 3*256 = 768px). The country/province cameras use a 6-tile grid (1536px)
-# at that same tile size, so a fixed font/dot/swatch size that reads fine
-# on the small camera ends up tiny on those — and _apply_extra_zoom's
-# post-crop upscale doesn't help, since it resamples pixels, not overlays
-# drawn after it. Scaling every overlay by the frame's actual width keeps
-# text/dots/swatches a consistent *proportion* of the image across every
-# camera, instead of a fixed pixel size that only looks right on one of
-# them.
+# 3*256 = 768px). Region cameras render at a different output size, so
+# scaling every overlay by the frame's actual width keeps text/dots/swatches
+# a consistent *proportion* of the image across every camera.
 _REFERENCE_FRAME_WIDTH = 768
 
 
 def _overlay_scale(frame: Any, override: float | None = None) -> float:
-    """How much bigger/smaller `frame` is than the reference 768px frame.
-
-    `override` lets a caller say "size this for a frame of this width"
-    instead of `frame`'s own — used by the region builders, which draw
-    overlays on the full pre-crop mosaic but then crop tightly to the
-    shape's bbox (see _center_on_shape): without this, every size here
-    would be tuned for the big mosaic and look oversized once cropped down
-    to a much smaller final image.
-    """
+    """How much bigger/smaller `frame` is than the reference 768px frame."""
     if override is not None:
         return override
     return frame.width / _REFERENCE_FRAME_WIDTH
@@ -553,8 +534,14 @@ def _draw_location_pin(
     origin_x: float,
     origin_y: float,
     current_weather: dict[str, Any] | None,
+    coord_scale: float = 1.0,
+    scale: float | None = None,
 ) -> None:
     """Mark the configured location with a pin, labeled with its current temperature.
+
+    `coord_scale` maps mosaic pixels to `frame` pixels when `frame` is a
+    resampled version of the mosaic `origin_x`/`origin_y` refer to (the
+    region cameras draw overlays after upscaling — see _render_region_frame).
 
     Drawn on every satellite view (local, country, province) so the
     configured point is identifiable on the image itself, not just
@@ -567,12 +554,12 @@ def _draw_location_pin(
     from PIL import ImageDraw
 
     px, py = _deg2pixel(latitude, longitude, zoom)
-    x, y = px - origin_x, py - origin_y
+    x, y = (px - origin_x) * coord_scale, (py - origin_y) * coord_scale
     if not (-20 <= x <= frame.width + 20 and -20 <= y <= frame.height + 20):
         return  # Off-frame (e.g. a province view where the point falls outside it).
 
     draw = ImageDraw.Draw(frame, "RGBA")
-    scale = _overlay_scale(frame)
+    scale = _overlay_scale(frame, scale)
 
     # Deliberately small relative to the frame — a marker that helps locate
     # the point without covering meaningful area of the image, especially
@@ -760,205 +747,233 @@ async def build_satellite_animation_gif(
     frames = [mosaic.convert("RGB") for mosaic in smoothed]
     if not frames:
         return None
+    return _encode_gif(frames)
 
+
+
+# --- Region (country / province) cameras -----------------------------------
+#
+# Pipeline, in this order on purpose:
+#   1. Pick the highest GIBS zoom at which the area still fits a sane number
+#      of source pixels (_REGION_MAX_SOURCE_PX), and fetch only the tiles that
+#      actually cover the area (not a fixed square grid around it).
+#   2. Crop to the area's bbox (plus a margin) and resample to a fixed output
+#      size (_REGION_OUTPUT_LONG_SIDE). The satellite data itself can't gain
+#      detail from this — GIBS' native resolution for a province is a few
+#      hundred pixels, especially in infrared — but it's what Home
+#      Assistant's dialog would otherwise do anyway, with a worse filter.
+#   3. Only then draw everything vector-like (darkening, outline,
+#      departments/provinces, pin, legend, caption) at that output
+#      resolution, supersampled for antialiasing. Drawing them before the
+#      resample — as an earlier version did — meant thin lines and text got
+#      stretched along with the clouds and came out blurry/blocky.
+
+_REGION_MAX_SOURCE_PX = 2048
+_REGION_OUTPUT_LONG_SIDE = 1080
+_REGION_MARGIN_RATIO = 0.05
+_REGION_SUPERSAMPLE = 2
+# Home Assistant's camera dialog fits the image to its width, so a very tall
+# shape (Córdoba, Argentina itself) would need scrolling — pad the sides with
+# the dark background instead, past this height:width ratio.
+_MAX_REGION_ASPECT_RATIO = 1.5
+_REGION_DARKEN_ALPHA = 220
+# The region image is ~720px wide but HA's dialog shows it closer to
+# 1000px, so the pin label is sized a bit above what the frame width alone
+# would suggest.
+_REGION_UI_SCALE = 1.5
+
+
+class _RegionView:
+    """Everything needed to fetch and render one area at one zoom level."""
+
+    def __init__(self, rings: list[list[tuple[float, float]]], layer: str,
+                 matrix_set: str, max_zoom: int) -> None:
+        import math
+
+        self.layer = layer
+        self.matrix_set = matrix_set
+        min_lat, min_lon, max_lat, max_lon = get_bbox(rings)
+
+        zoom = max_zoom
+        while True:
+            x0, y0 = _deg2pixel(max_lat, min_lon, zoom)
+            x1, y1 = _deg2pixel(min_lat, max_lon, zoom)
+            margin = max(x1 - x0, y1 - y0) * _REGION_MARGIN_RATIO
+            if max(x1 - x0, y1 - y0) + 2 * margin <= _REGION_MAX_SOURCE_PX or zoom == 0:
+                break
+            zoom -= 1
+        self.zoom = zoom
+
+        # Area to show, in world pixels at `zoom`. Extra room at the bottom
+        # so the caption/timeline bar doesn't cover the shape's southern tip.
+        self.px0, self.py0 = x0 - margin, y0 - margin
+        self.px1, self.py1 = x1 + margin, y1 + margin + max(x1 - x0, y1 - y0) * 0.07
+
+        size = SATELLITE_TILE_SIZE
+        last_tile = 2 ** zoom - 1
+        self.tile_x0 = math.floor(self.px0 / size)
+        self.tile_x1 = math.floor((self.px1 - 1) / size)
+        self.tile_y0 = max(0, math.floor(self.py0 / size))
+        self.tile_y1 = min(last_tile, math.floor((self.py1 - 1) / size))
+        self.mosaic_origin = (self.tile_x0 * size, self.tile_y0 * size)
+
+        content_w, content_h = self.px1 - self.px0, self.py1 - self.py0
+        self.scale = _REGION_OUTPUT_LONG_SIDE / max(content_w, content_h)
+        self.content_size = (round(content_w * self.scale), round(content_h * self.scale))
+        out_w, out_h = self.content_size
+        if out_h > out_w * _MAX_REGION_ASPECT_RATIO:
+            out_w = round(out_h / _MAX_REGION_ASPECT_RATIO)
+        self.output_size = (out_w, out_h)
+        self.pad_x = (out_w - self.content_size[0]) // 2
+
+    def to_output(self, lat: float, lon: float, supersample: int = 1) -> tuple[float, float]:
+        """World lat/lon -> pixel on the rendered output image."""
+        px, py = _deg2pixel(lat, lon, self.zoom)
+        return (
+            ((px - self.px0) * self.scale + self.pad_x) * supersample,
+            (py - self.py0) * self.scale * supersample,
+        )
+
+
+async def _fetch_region_raster(
+    session: aiohttp.ClientSession, view: _RegionView, when: datetime
+) -> tuple[Any, bool]:
+    """Fetch the tiles covering `view` at `when`, return (cropped raster, complete)."""
+    from PIL import Image
+
+    size = SATELLITE_TILE_SIZE
+    time_str = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    positions = [
+        (tx, ty)
+        for tx in range(view.tile_x0, view.tile_x1 + 1)
+        for ty in range(view.tile_y0, view.tile_y1 + 1)
+    ]
+    tiles = await asyncio.gather(
+        *(
+            _fetch_tile(
+                session,
+                GIBS_TILE_URL_TEMPLATE.format(
+                    layer=view.layer,
+                    time=time_str,
+                    matrix_set=view.matrix_set,
+                    z=view.zoom,
+                    x=tx,
+                    y=ty,
+                ),
+            )
+            for tx, ty in positions
+        )
+    )
+    complete = all(tile is not None for tile in tiles)
+    mosaic = Image.new(
+        "RGBA",
+        ((view.tile_x1 - view.tile_x0 + 1) * size, (view.tile_y1 - view.tile_y0 + 1) * size),
+        (0, 0, 0, 255),
+    )
+    for (tx, ty), tile in zip(positions, tiles):
+        if tile is not None:
+            mosaic.paste(tile, ((tx - view.tile_x0) * size, (ty - view.tile_y0) * size))
+    ox, oy = view.mosaic_origin
+    crop = mosaic.crop(
+        (round(view.px0 - ox), round(view.py0 - oy), round(view.px1 - ox), round(view.py1 - oy))
+    )
+    return crop, complete
+
+
+def _render_region_frame(
+    raster: Any,
+    view: _RegionView,
+    rings: list[list[tuple[float, float]]],
+    subdivisions: list[list[tuple[float, float]]] | None,
+    pin: tuple[float, float] | None,
+    current_weather: dict[str, Any] | None,
+    caption: str,
+    frame_index: int | None = None,
+    total_frames: int | None = None,
+) -> Any:
+    """Resample `raster` to the output size, then draw every overlay on top."""
+    from PIL import Image
+
+    raster = _smooth_if_infrared(raster, view.layer)
+    if view.layer != GIBS_LAYER_INFRARED and view.scale > 1.5:
+        # A large upscale of GeoColor shows pixel stair-steps; a very light
+        # blur first makes LANCZOS produce smooth cloud edges instead.
+        from PIL import ImageFilter
+
+        raster = raster.filter(ImageFilter.GaussianBlur(radius=0.7))
+    raster = raster.resize(view.content_size, Image.LANCZOS)
+    frame = Image.new("RGBA", view.output_size, (0, 0, 0, 255))
+    frame.paste(raster, (view.pad_x, 0))
+
+    # Vector overlays drawn at 2x and downsampled: PIL's line drawing isn't
+    # antialiased, so this is what keeps the outline and the dashed
+    # department lines smooth instead of jagged.
+    ss = _REGION_SUPERSAMPLE
+    overlay = Image.new("RGBA", (frame.width * ss, frame.height * ss), (0, 0, 0, 0))
+    draw_region_overlay(
+        overlay,
+        rings,
+        lambda lat, lon: view.to_output(lat, lon, ss),
+        0,
+        0,
+        darken_alpha=_REGION_DARKEN_ALPHA,
+        subdivision_rings=subdivisions,
+        scale=ss * frame.width / 400,
+    )
+    frame.alpha_composite(overlay.resize(frame.size, Image.LANCZOS))
+
+    if pin:
+        _draw_location_pin(
+            frame,
+            pin[0],
+            pin[1],
+            view.zoom,
+            view.px0 - view.pad_x / view.scale,
+            view.py0,
+            current_weather,
+            coord_scale=view.scale,
+            scale=_REGION_UI_SCALE,
+        )
+    if view.layer == GIBS_LAYER_INFRARED:
+        _draw_ir_legend(frame)
+    _draw_caption(frame, caption, frame_index=frame_index, total_frames=total_frames)
+    return frame.convert("RGB")
+
+
+def _encode_gif(frames: list[Any], frame_ms: int = 450, hold_last_ms: int = 1500) -> bytes:
+    """Encode frames as a looping GIF, without dithering.
+
+    Pillow's default RGB->palette conversion dithers, which turns thin
+    antialiased lines and text into speckled noise once quantized to 256
+    colors. The last frame (the most recent image) is held longer so the
+    loop doesn't feel like it skips straight back to the oldest one.
+    """
+    from PIL import Image
+
+    try:
+        no_dither = Image.Dither.NONE
+    except AttributeError:  # Pillow < 9.1
+        no_dither = Image.NONE
+    paletted = [f.quantize(colors=256, dither=no_dither) for f in frames]
+    durations = [frame_ms] * (len(paletted) - 1) + [hold_last_ms]
     buffer = io.BytesIO()
-    frames[0].save(
+    paletted[0].save(
         buffer,
         format="GIF",
         save_all=True,
-        append_images=frames[1:],
-        duration=400,
+        append_images=paletted[1:],
+        duration=durations,
         loop=0,
+        disposal=1,
     )
     return buffer.getvalue()
 
 
-async def _fetch_region_mosaic(
-    session: aiohttp.ClientSession,
-    layer: str,
-    matrix_set: str,
-    when: datetime,
-    zoom: int,
-    center_x: int,
-    center_y: int,
-) -> tuple[Any, bool]:
-    """Same as _fetch_mosaic, but at an arbitrary zoom and SATELLITE_REGION_TILE_GRID size."""
-    from PIL import Image
-
-    half = SATELLITE_REGION_TILE_GRID // 2
-    mosaic = Image.new(
-        "RGBA",
-        (
-            SATELLITE_TILE_SIZE * SATELLITE_REGION_TILE_GRID,
-            SATELLITE_TILE_SIZE * SATELLITE_REGION_TILE_GRID,
-        ),
-    )
-    time_str = when.strftime("%Y-%m-%dT%H:%M:%SZ")
-    positions = [(dx, dy) for dx in range(-half, half + 1) for dy in range(-half, half + 1)]
-    urls = [
-        GIBS_TILE_URL_TEMPLATE.format(
-            layer=layer,
-            time=time_str,
-            matrix_set=matrix_set,
-            z=zoom,
-            x=center_x + dx,
-            y=center_y + dy,
-        )
-        for dx, dy in positions
-    ]
-    tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
-    complete = all(tile is not None for tile in tiles)
-    for (dx, dy), tile_img in zip(positions, tiles):
-        if tile_img is None:
-            tile_img = Image.new("RGBA", (SATELLITE_TILE_SIZE, SATELLITE_TILE_SIZE), (0, 0, 0, 0))
-        mosaic.paste(tile_img, ((dx + half) * SATELLITE_TILE_SIZE, (dy + half) * SATELLITE_TILE_SIZE))
-    return mosaic, complete
-
-
-async def _fetch_complete_region_mosaic(
-    session: aiohttp.ClientSession,
-    layer: str,
-    matrix_set: str,
-    start_time: datetime,
-    zoom: int,
-    center_x: int,
-    center_y: int,
-    max_attempts: int = 4,
-):
-    """Same fallback as _fetch_complete_mosaic, for the region (country/province) grid."""
-    mosaic, complete, when = None, False, start_time
-    for i in range(max_attempts):
-        when = start_time - i * _FRAME_INTERVAL
-        mosaic, complete = await _fetch_region_mosaic(
-            session, layer, matrix_set, when, zoom, center_x, center_y
-        )
-        if complete:
-            return mosaic, when
-    _LOGGER.debug(
-        "No complete GIBS region mosaic found for %s within %d attempts before %s, using partial frame",
-        layer, max_attempts, start_time,
-    )
-    return mosaic, when
-
-
-def _region_center_and_zoom(
-    rings: list[list[tuple[float, float]]], is_daytime: bool, force_infrared: bool = False
-) -> tuple[str, str, int, int, int, int, int]:
-    """Resolve (layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y) for `rings`.
-
-    Always uses the same 0.9 fit margin — GIBS' own tile resolution caps
-    out at GIBS_MAX_ZOOM_GEOCOLOR/INFRARED (7/6), which a small-ish
-    province typically already hits well before this margin matters; going
-    tighter than the data's native resolution happens afterwards, as a
-    post-fetch crop to the shape's own bbox — see _center_on_shape.
-    """
+def _region_view_for(
+    rings: list[list[tuple[float, float]]], is_daytime: bool, force_infrared: bool
+) -> _RegionView:
     layer, matrix_set = _layer_for(is_daytime, force_infrared)
-    max_zoom = _max_zoom_for(is_daytime, force_infrared)
-    min_lat, min_lon, max_lat, max_lon = get_bbox(rings)
-    zoom = _zoom_for_bbox(min_lat, min_lon, max_lat, max_lon, SATELLITE_REGION_TILE_GRID, max_zoom)
-    center_lat = (min_lat + max_lat) / 2
-    center_lon = (min_lon + max_lon) / 2
-    center_x, center_y = _deg2tile(center_lat, center_lon, zoom)
-    half = SATELLITE_REGION_TILE_GRID // 2
-    origin_x = (center_x - half) * SATELLITE_TILE_SIZE
-    origin_y = (center_y - half) * SATELLITE_TILE_SIZE
-    return layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y
-
-
-def _rings_pixel_bbox(
-    rings: list[list[tuple[float, float]]],
-    deg2pixel: Any,
-    origin_x: float,
-    origin_y: float,
-) -> tuple[float, float, float, float]:
-    """Pixel-space (x0, y0, x1, y1) bounding box of `rings` on the mosaic."""
-    xs: list[float] = []
-    ys: list[float] = []
-    for ring in rings:
-        for lon, lat in ring:
-            px, py = deg2pixel(lat, lon)
-            xs.append(px - origin_x)
-            ys.append(py - origin_y)
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-_MIN_REGION_OUTPUT_WIDTH = 420
-_MAX_REGION_UPSCALE = 1.8
-# Home Assistant's camera "more info" dialog stretches whatever image it's
-# given to the dialog's width, so a tall/narrow shape (Córdoba, or
-# Argentina itself) comes out needing to scroll to see the whole thing,
-# and looks softer than it should since the browser is doing its own
-# (non-LANCZOS) upscale on top of ours. Capping the height:width ratio by
-# padding width with the same dark background — rather than leaving it to
-# whatever the shape's real aspect ratio is — keeps the whole image
-# visible without scrolling and closer to the resolution the dialog will
-# actually render it at.
-_MAX_REGION_ASPECT_RATIO = 1.5  # height <= 1.5 * width
-
-
-def _center_on_shape(
-    frame: Any,
-    bbox: tuple[float, float, float, float],
-    margin_ratio: float = 0.08,
-) -> Any:
-    """Crop `frame` tightly around `bbox` (a shape's own pixel bbox) and
-    center it, at its real resolution, on a canvas the size of `frame`.
-
-    The tile grid used to fetch region mosaics is always square, but a
-    province's actual shape rarely is (Córdoba, for instance, is tall and
-    narrow) — fitting a square grid to a non-square shape leaves large
-    empty margins on whichever axis has slack, and the shape isn't
-    necessarily centered in them either. Cropping to the shape's own pixel
-    bbox (plus a small margin so the outline isn't flush against the edge)
-    fixes the centering.
-
-    Deliberately NOT upscaled to fill some fixed canvas size: GIBS' native
-    tile resolution for an area the size of a province is low enough (a
-    few hundred real pixels across, especially for the infrared layer,
-    whose native zoom is a level coarser than GeoColor's) that stretching
-    it to fill a much bigger frame just enlarges each real pixel into a
-    visible block — more "zoom" but strictly less information, and it
-    reads as broken/low-quality rather than as a closer view. Returning
-    the crop at its own real size (not padded back out to `frame`'s
-    original dimensions) also means every overlay drawn *after* this call
-    (caption, IR legend) sizes itself relative to how big the image
-    actually ends up — see _overlay_scale — instead of a fixed canvas size
-    that would make them look oversized next to a small, honestly-sized
-    crop.
-
-    One exception: if the honest crop is narrower than
-    _MIN_REGION_OUTPUT_WIDTH (routinely the case for infrared, whose
-    native GIBS zoom is a level coarser than GeoColor's — a province can
-    come out well under 300px wide), it's upscaled just enough to reach
-    that floor, capped at _MAX_REGION_UPSCALE — a small camera image with
-    the caption/legend eating most of it isn't "honest", it's just hard to
-    use, and a mild, capped stretch reads better than that without
-    sliding back into the visible-block territory an uncapped stretch hit
-    before.
-    """
-    from PIL import Image
-
-    x0, y0, x1, y1 = bbox
-    w, h = x1 - x0, y1 - y0
-    mx, my = w * margin_ratio, h * margin_ratio
-    x0, y0 = max(0, x0 - mx), max(0, y0 - my)
-    x1, y1 = min(frame.width, x1 + mx), min(frame.height, y1 + my)
-    if x1 <= x0 or y1 <= y0:
-        return frame
-    cropped = frame.crop((x0, y0, x1, y1))
-
-    if cropped.width < _MIN_REGION_OUTPUT_WIDTH:
-        scale = min(_MAX_REGION_UPSCALE, _MIN_REGION_OUTPUT_WIDTH / cropped.width)
-        if scale > 1.01:
-            new_size = (round(cropped.width * scale), round(cropped.height * scale))
-            cropped = cropped.resize(new_size, Image.LANCZOS)
-
-    if cropped.height > cropped.width * _MAX_REGION_ASPECT_RATIO:
-        target_width = round(cropped.height / _MAX_REGION_ASPECT_RATIO)
-        padded = Image.new("RGBA", (target_width, cropped.height), (0, 0, 0, 255))
-        padded.paste(cropped, ((target_width - cropped.width) // 2, 0))
-        cropped = padded
-    return cropped
+    return _RegionView(rings, layer, matrix_set, _max_zoom_for(is_daytime, force_infrared))
 
 
 async def build_region_snapshot_jpeg(
@@ -970,60 +985,33 @@ async def build_region_snapshot_jpeg(
     current_weather: dict[str, Any] | None = None,
     subdivisions: list[list[tuple[float, float]]] | None = None,
 ) -> bytes | None:
-    """Build a static JPEG covering a whole area (a province, or all of Argentina).
+    """Static JPEG of a whole area (a province, or all of Argentina).
 
-    Unlike build_satellite_snapshot_jpeg (fixed zoom around one lat/lon),
-    the zoom level here is computed from `rings`' own bounding box so the
-    whole area fits the frame — this is what lets a dedicated "Córdoba" or
-    "Argentina" camera actually show the full province/country, which
-    isn't possible at the local camera's fixed street-level-ish zoom. The
-    result is then cropped tightly to the shape's own pixel bbox and
-    centered (see _center_on_shape) — a province is rarely square, so
-    fitting it into a square tile grid otherwise leaves it off-center with
-    empty margins. Its own outline is drawn on top (see
-    boundaries.draw_region_overlay), with the area outside it darkened
-    heavily (not just dimmed) so the shape itself is unambiguously what
-    the camera is "about". `pin` is the configured location's (latitude,
-    longitude), marked with `current_weather`'s temperature — left out
-    (None) if the point wouldn't fall inside this frame anyway.
-    `subdivisions` (optional) draws internal borders inside `rings` —
-    departments for a province camera, provinces for the country camera.
+    See the comment at the top of this section for the rendering pipeline.
+    `pin` is the configured location's (latitude, longitude), labeled with
+    `current_weather`'s temperature; `subdivisions` are internal borders
+    (departments for a province, provinces for the country).
     """
     if not rings:
         return None
-    layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
-        rings, is_daytime, force_infrared
-    )
-
-    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
+    view = _region_view_for(rings, is_daytime, force_infrared)
+    latest_time = await _resolve_latest_frame_time(session, view.layer, view.matrix_set)
     if latest_time is None:
-        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
+        _LOGGER.warning("No recent GIBS frame found for layer %s", view.layer)
         return None
 
-    mosaic, resolved_time = await _fetch_complete_region_mosaic(
-        session, layer, matrix_set, latest_time, zoom, center_x, center_y
-    )
-    mosaic = _smooth_if_infrared(mosaic, layer)
-    deg2pixel = lambda lat, lon: _deg2pixel(lat, lon, zoom)  # noqa: E731
-    draw_region_overlay(
-        mosaic,
-        rings,
-        deg2pixel,
-        origin_x,
-        origin_y,
-        darken_alpha=220,
-        subdivision_rings=subdivisions,
-    )
-    if pin:
-        _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)
-    bbox = _rings_pixel_bbox(rings, deg2pixel, origin_x, origin_y)
-    mosaic = _center_on_shape(mosaic, bbox)
-    if layer == GIBS_LAYER_INFRARED:
-        _draw_ir_legend(mosaic)
-    _draw_caption(mosaic, _format_frame_caption(resolved_time))
+    raster, when = None, latest_time
+    for i in range(4):
+        when = latest_time - i * _FRAME_INTERVAL
+        raster, complete = await _fetch_region_raster(session, view, when)
+        if complete:
+            break
 
+    frame = _render_region_frame(
+        raster, view, rings, subdivisions, pin, current_weather, _format_frame_caption(when)
+    )
     buffer = io.BytesIO()
-    mosaic.convert("RGB").save(buffer, format="JPEG", quality=85)
+    frame.save(buffer, format="JPEG", quality=90)
     return buffer.getvalue()
 
 
@@ -1036,74 +1024,48 @@ async def build_region_animation_gif(
     current_weather: dict[str, Any] | None = None,
     subdivisions: list[list[tuple[float, float]]] | None = None,
 ) -> bytes | None:
-    """Build an animated GIF of the last SATELLITE_ANIMATION_FRAMES frames for a whole area.
+    """Animated GIF of the last SATELLITE_ANIMATION_FRAMES frames of a whole area.
 
-    Same idea as build_satellite_animation_gif, but zoomed to fit `rings`'
-    bounding box (see build_region_snapshot_jpeg) instead of a fixed zoom
-    around a lat/lon — used for the province animation camera. `subdivisions`
-    is the same as in build_region_snapshot_jpeg (departments/provinces).
+    Same rendering as build_region_snapshot_jpeg. More candidate timestamps
+    than needed are fetched (SATELLITE_ANIMATION_LOOKBACK_BUFFER) so a few
+    incomplete ones don't shrink the animation; the most recent complete
+    ones are kept.
     """
     if not rings:
         return None
-    layer, matrix_set, zoom, center_x, center_y, origin_x, origin_y = _region_center_and_zoom(
-        rings, is_daytime, force_infrared
-    )
-
-    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
+    view = _region_view_for(rings, is_daytime, force_infrared)
+    latest_time = await _resolve_latest_frame_time(session, view.layer, view.matrix_set)
     if latest_time is None:
-        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
+        _LOGGER.warning("No recent GIBS frame found for layer %s", view.layer)
         return None
     times = _recent_frame_times(
         latest_time, SATELLITE_ANIMATION_FRAMES + SATELLITE_ANIMATION_LOOKBACK_BUFFER
     )
-
     results = await asyncio.gather(
-        *(
-            _fetch_region_mosaic(session, layer, matrix_set, when, zoom, center_x, center_y)
-            for when in times
-        )
+        *(_fetch_region_raster(session, view, when) for when in times)
     )
-    # See build_satellite_animation_gif: more candidates than needed are
-    # fetched so incomplete ones (more likely here — a bigger tile grid,
-    # e.g. the country camera's 6x6, has more tiles that could be missing
-    # for a given timestamp) don't shrink the animation below its target
-    # frame count. Keep the most recent SATELLITE_ANIMATION_FRAMES that
-    # came back complete.
-    kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
+    kept = [(raster, when) for (raster, complete), when in zip(results, times) if complete]
     kept = kept[-SATELLITE_ANIMATION_FRAMES:]
-    total = len(kept)
-    deg2pixel = lambda lat, lon: _deg2pixel(lat, lon, zoom)  # noqa: E731
-    bbox = _rings_pixel_bbox(rings, deg2pixel, origin_x, origin_y)
-    zoomed: list[Any] = []
-    for i, (mosaic, when) in enumerate(kept):
-        mosaic = _smooth_if_infrared(mosaic, layer)
-        draw_region_overlay(
-            mosaic,
-            rings,
-            deg2pixel,
-            origin_x,
-            origin_y,
-            darken_alpha=220,
-            subdivision_rings=subdivisions,
-        )
-        if pin:
-            _draw_location_pin(mosaic, pin[0], pin[1], zoom, origin_x, origin_y, current_weather)
-        mosaic = _center_on_shape(mosaic, bbox)
-        if layer == GIBS_LAYER_INFRARED:
-            _draw_ir_legend(mosaic)
-        _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)
-        zoomed.append(mosaic)
-    frames = [mosaic.convert("RGB") for mosaic in zoomed]
-    if not frames:
+    if not kept:
         return None
+    if len(kept) < 2:
+        _LOGGER.debug(
+            "Only %d complete GIBS frame(s) for %s, animation won't move", len(kept), view.layer
+        )
 
-    buffer = io.BytesIO()
-    frames[0].save(
-        buffer,
-        format="GIF",
-        save_all=True,
-        append_images=frames[1:],
-        duration=400,
-        loop=0,
-    )
-    return buffer.getvalue()
+    total = len(kept)
+    frames = [
+        _render_region_frame(
+            raster,
+            view,
+            rings,
+            subdivisions,
+            pin,
+            current_weather,
+            _format_frame_caption(when),
+            frame_index=i,
+            total_frames=total,
+        )
+        for i, (raster, when) in enumerate(kept)
+    ]
+    return _encode_gif(frames)

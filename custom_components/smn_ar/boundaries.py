@@ -198,7 +198,7 @@ def draw_province_outline(
         # much smaller final image, so the stroke should be sized for
         # *that*, not for the pre-crop canvas it's actually drawn on.
         effective_scale = scale if scale is not None else frame.width / 768
-        width = max(2, min(5, round(2 * effective_scale)))
+        width = max(2, min(8, round(2 * effective_scale)))
 
     draw = ImageDraw.Draw(frame, "RGBA")
     for ring in rings:
@@ -250,7 +250,7 @@ def draw_subdivision_lines(
     deg2pixel: Any,
     origin_x: float,
     origin_y: float,
-    color: tuple[int, int, int, int] = (235, 238, 240, 115),
+    color: tuple[int, int, int, int] = (235, 238, 240, 165),
     scale: float | None = None,
 ) -> None:
     """Draw internal borders (departments within a province, provinces within
