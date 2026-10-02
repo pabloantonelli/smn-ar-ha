@@ -329,8 +329,18 @@ _CAPTION_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSan
 _REFERENCE_FRAME_WIDTH = 768
 
 
-def _overlay_scale(frame: Any) -> float:
-    """How much bigger/smaller `frame` is than the reference 768px frame."""
+def _overlay_scale(frame: Any, override: float | None = None) -> float:
+    """How much bigger/smaller `frame` is than the reference 768px frame.
+
+    `override` lets a caller say "size this for a frame of this width"
+    instead of `frame`'s own — used by the region builders, which draw
+    overlays on the full pre-crop mosaic but then crop tightly to the
+    shape's bbox (see _center_on_shape): without this, every size here
+    would be tuned for the big mosaic and look oversized once cropped down
+    to a much smaller final image.
+    """
+    if override is not None:
+        return override
     return frame.width / _REFERENCE_FRAME_WIDTH
 
 
@@ -374,6 +384,7 @@ def _draw_caption(
     text: str,
     frame_index: int | None = None,
     total_frames: int | None = None,
+    scale: float | None = None,
 ) -> None:
     """Draw a timestamp banner across the bottom of the frame.
 
@@ -385,12 +396,13 @@ def _draw_caption(
     corner. Every size here scales with the frame's own width (see
     _overlay_scale) so this looks the same proportionally whether it's
     drawn on the small local camera or the much bigger country/province
-    mosaics.
+    mosaics — `scale` overrides that when the frame will be cropped down
+    afterwards (see _overlay_scale).
     """
     from PIL import ImageDraw
 
     draw = ImageDraw.Draw(frame, "RGBA")
-    scale = _overlay_scale(frame)
+    scale = _overlay_scale(frame, scale)
 
     font_size = round(_scaled(22, scale, 20, 38))
     padding = round(_scaled(10, scale, 10, 18))
@@ -835,13 +847,17 @@ def _rings_pixel_bbox(
     return min(xs), min(ys), max(xs), max(ys)
 
 
+_MIN_REGION_OUTPUT_WIDTH = 420
+_MAX_REGION_UPSCALE = 1.8
+
+
 def _center_on_shape(
     frame: Any,
     bbox: tuple[float, float, float, float],
     margin_ratio: float = 0.08,
 ) -> Any:
     """Crop `frame` tightly around `bbox` (a shape's own pixel bbox) and
-    upscale back to the original frame size.
+    center it, at its real resolution, on a canvas the size of `frame`.
 
     The tile grid used to fetch region mosaics is always square, but a
     province's actual shape rarely is (Córdoba, for instance, is tall and
@@ -849,11 +865,31 @@ def _center_on_shape(
     empty margins on whichever axis has slack, and the shape isn't
     necessarily centered in them either. Cropping to the shape's own pixel
     bbox (plus a small margin so the outline isn't flush against the edge)
-    and scaling back up fixes both at once: it's now centered by
-    definition, and fills the frame as much as the shape's own aspect
-    ratio allows — replaces the old uniform `_apply_extra_zoom` approach
-    for region cameras, which cropped a fixed ratio around the frame's
-    center regardless of the shape's actual footprint in it.
+    fixes the centering.
+
+    Deliberately NOT upscaled to fill some fixed canvas size: GIBS' native
+    tile resolution for an area the size of a province is low enough (a
+    few hundred real pixels across, especially for the infrared layer,
+    whose native zoom is a level coarser than GeoColor's) that stretching
+    it to fill a much bigger frame just enlarges each real pixel into a
+    visible block — more "zoom" but strictly less information, and it
+    reads as broken/low-quality rather than as a closer view. Returning
+    the crop at its own real size (not padded back out to `frame`'s
+    original dimensions) also means every overlay drawn *after* this call
+    (caption, IR legend) sizes itself relative to how big the image
+    actually ends up — see _overlay_scale — instead of a fixed canvas size
+    that would make them look oversized next to a small, honestly-sized
+    crop.
+
+    One exception: if the honest crop is narrower than
+    _MIN_REGION_OUTPUT_WIDTH (routinely the case for infrared, whose
+    native GIBS zoom is a level coarser than GeoColor's — a province can
+    come out well under 300px wide), it's upscaled just enough to reach
+    that floor, capped at _MAX_REGION_UPSCALE — a small camera image with
+    the caption/legend eating most of it isn't "honest", it's just hard to
+    use, and a mild, capped stretch reads better than that without
+    sliding back into the visible-block territory an uncapped stretch hit
+    before.
     """
     from PIL import Image
 
@@ -866,22 +902,12 @@ def _center_on_shape(
         return frame
     cropped = frame.crop((x0, y0, x1, y1))
 
-    # Scale back up so the output uses as much of the original frame's
-    # resolution as the crop's own aspect ratio allows — matching the
-    # *larger* dimension to the original frame (not the smaller, and
-    # uncapped) so a tall/narrow province like Córdoba still fills most of
-    # a square frame at full resolution instead of coming out small. An
-    # earlier version capped this at 2x to avoid upscaling blur, but that
-    # produced visibly small/blocky images for anything whose bbox was a
-    # small fraction of the fetched tile grid (routinely the case for the
-    # infrared layer, whose native GIBS resolution is already one zoom
-    # level coarser than GeoColor's) — a bit of LANCZOS softness beats a
-    # genuinely low-resolution image the UI then stretches anyway.
-    scale = max(frame.width / cropped.width, frame.height / cropped.height)
-    if scale <= 1.01:
-        return cropped
-    new_size = (round(cropped.width * scale), round(cropped.height * scale))
-    return cropped.resize(new_size, Image.LANCZOS)
+    if cropped.width < _MIN_REGION_OUTPUT_WIDTH:
+        scale = min(_MAX_REGION_UPSCALE, _MIN_REGION_OUTPUT_WIDTH / cropped.width)
+        if scale > 1.01:
+            new_size = (round(cropped.width * scale), round(cropped.height * scale))
+            cropped = cropped.resize(new_size, Image.LANCZOS)
+    return cropped
 
 
 async def build_region_snapshot_jpeg(

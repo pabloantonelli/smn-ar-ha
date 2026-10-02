@@ -169,6 +169,7 @@ def draw_province_outline(
     origin_y: float,
     color: tuple[int, int, int, int] = (255, 191, 105, 225),
     width: int | None = None,
+    scale: float | None = None,
 ) -> None:
     """Draw a province's outline on `frame`, given a lon/lat -> world-pixel function.
 
@@ -192,8 +193,12 @@ def draw_province_outline(
         # Scaled against the same 768px reference frame satellite.py's
         # overlays use, so the outline doesn't look thin on the much
         # bigger country/province mosaics (1536px+) or heavy on the small
-        # local camera.
-        width = max(2, min(5, round(2 * frame.width / 768)))
+        # local camera. `scale` lets a caller override what "the frame's
+        # own size" means — e.g. when it's about to be cropped down to a
+        # much smaller final image, so the stroke should be sized for
+        # *that*, not for the pre-crop canvas it's actually drawn on.
+        effective_scale = scale if scale is not None else frame.width / 768
+        width = max(2, min(5, round(2 * effective_scale)))
 
     draw = ImageDraw.Draw(frame, "RGBA")
     for ring in rings:
@@ -246,6 +251,7 @@ def draw_subdivision_lines(
     origin_x: float,
     origin_y: float,
     color: tuple[int, int, int, int] = (235, 238, 240, 115),
+    scale: float | None = None,
 ) -> None:
     """Draw internal borders (departments within a province, provinces within
     the country) as thin, dashed, translucent lines — deliberately a
@@ -253,14 +259,15 @@ def draw_subdivision_lines(
     draw_province_outline's solid amber, so with dozens of departments on
     screen at once they read as background reference, not as more of
     "the" boundary. No dark halo: a halo on every dash would turn into
-    visual clutter at this density.
+    visual clutter at this density. See draw_province_outline for what
+    `scale` overrides.
     """
     from PIL import ImageDraw
 
-    scale = frame.width / 768
-    width = max(1, round(scale))
-    dash = max(3, round(5 * scale))
-    gap = max(3, round(4 * scale))
+    effective_scale = scale if scale is not None else frame.width / 768
+    width = max(1, round(effective_scale))
+    dash = max(3, round(5 * effective_scale))
+    gap = max(3, round(4 * effective_scale))
     draw = ImageDraw.Draw(frame, "RGBA")
     for ring in rings:
         points = []
@@ -279,6 +286,7 @@ def draw_region_overlay(
     origin_y: float,
     darken_alpha: int = 130,
     subdivision_rings: list[list[tuple[float, float]]] | None = None,
+    scale: float | None = None,
 ) -> None:
     """Darken everything outside `rings` (a spotlight effect), then draw the outline.
 
@@ -287,7 +295,9 @@ def draw_region_overlay(
     border), and reads immediately as "this is the area that matters"
     without having to trace the line. Rings with holes aren't a concern
     here (Argentina's provinces are all simple polygons), so this just
-    unions every ring's filled interior into one "keep lit" mask.
+    unions every ring's filled interior into one "keep lit" mask. `scale`
+    is passed through to draw_province_outline/draw_subdivision_lines —
+    see there for what it overrides.
     """
     from PIL import Image, ImageDraw
 
@@ -308,5 +318,5 @@ def draw_region_overlay(
     frame.alpha_composite(overlay)
 
     if subdivision_rings:
-        draw_subdivision_lines(frame, subdivision_rings, deg2pixel, origin_x, origin_y)
-    draw_province_outline(frame, rings, deg2pixel, origin_x, origin_y)
+        draw_subdivision_lines(frame, subdivision_rings, deg2pixel, origin_x, origin_y, scale=scale)
+    draw_province_outline(frame, rings, deg2pixel, origin_x, origin_y, scale=scale)
