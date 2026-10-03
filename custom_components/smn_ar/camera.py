@@ -12,10 +12,7 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from aiohttp import web
-
 from homeassistant.components.camera import Camera
-from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant
@@ -41,18 +38,9 @@ from .const import (
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .radar import build_radar_snapshot_jpeg
-from .satellite import build_region_animation_frames, encode_animation
+from .satellite import build_region_animation_frames, encode_mp4
 
 _LOGGER = logging.getLogger(__name__)
-
-try:
-    from homeassistant.helpers.http import KEY_HASS
-except ImportError:  # Home Assistant < 2024.2
-    KEY_HASS = "hass"
-
-_VIDEOS_KEY = f"{DOMAIN}_videos"
-_VIDEO_VIEW_KEY = f"{DOMAIN}_video_view"
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -66,10 +54,6 @@ async def async_setup_entry(
     latitude = config_entry.data[CONF_LATITUDE]
     longitude = config_entry.data[CONF_LONGITUDE]
     name = config_entry.data.get(CONF_NAME, "SMN")
-
-    if not hass.data.get(_VIDEO_VIEW_KEY):
-        hass.http.register_view(SMNSatelliteVideoView())
-        hass.data[_VIDEO_VIEW_KEY] = True
 
     entities: list[Camera] = [
         SMNRadarCamera(coordinator, config_entry, name, latitude, longitude),
@@ -92,7 +76,7 @@ async def async_setup_entry(
 def _remove_stale_cameras(
     hass: HomeAssistant, config_entry: ConfigEntry, current_unique_ids: set[str | None]
 ) -> None:
-    """Drop camera entities earlier versions created (static/local/GIF/video variants)."""
+    """Drop camera entities earlier versions created (static, local and video variants)."""
     registry = er.async_get(hass)
     for entry in er.async_entries_for_config_entry(registry, config_entry.entry_id):
         if entry.domain == "camera" and entry.unique_id not in current_unique_ids:
@@ -227,13 +211,7 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
 
 
 class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
-    """Animated satellite view: a GIF as the camera image, plus an MP4 of it.
-
-    The GIF is what dashboards show (camera cards render the camera image
-    in an <img>, which can't play video). The MP4 is for chat apps:
-    WhatsApp's "GIFs" are short looping MP4s, so a GIF sent there arrives
-    as a still photo. It's served at the `video_url` attribute (see
-    SMNSatelliteVideoView), so a notifier can send the video instead.
+    """Animated satellite view, served as a short looping MP4.
 
     Built in the background and served from cache, so a request never waits
     on GIBS (the radar camera does the same — see its docstring).
@@ -255,7 +233,7 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
     ) -> None:
         super().__init__(coordinator)
         Camera.__init__(self)
-        self.content_type = "image/gif"
+        self.content_type = "video/mp4"
         self._attr_translation_key = kind
         self._attr_unique_id = f"{config_entry.entry_id}_{kind}"
         self._attr_name = f"{name} {label}"
@@ -263,8 +241,7 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
         self._latitude = latitude
         self._longitude = longitude
         self._force_infrared = force_infrared
-        self._gif: bytes | None = None
-        self.video: bytes | None = None
+        self._video: bytes | None = None
         self._refreshing = False
 
     @property
@@ -276,16 +253,8 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
             entry_type=DeviceEntryType.SERVICE,
         )
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        if not self.video:
-            return {}
-        return {"video_url": f"/api/{DOMAIN}/video/{self.entity_id}"}
-
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        self.hass.data.setdefault(_VIDEOS_KEY, {})[self.entity_id] = self
-        self.async_on_remove(lambda: self.hass.data[_VIDEOS_KEY].pop(self.entity_id, None))
         self.hass.async_create_task(self._async_refresh())
         self.async_on_remove(
             async_track_time_interval(
@@ -308,11 +277,10 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
         try:
             frames = await self._build_frames()
             if frames:
-                encoded = await self.hass.async_add_executor_job(encode_animation, frames)
-                self._gif = encoded["gif"]
-                self.video = encoded["mp4"]
-                self.async_write_ha_state()
-            elif not self._gif:
+                video = await self.hass.async_add_executor_job(encode_mp4, frames)
+                if video:
+                    self._video = video
+            elif not self._video:
                 _LOGGER.warning(
                     "No satellite animation available yet for %s (GIBS fetch failed)",
                     self.entity_id or self._attr_unique_id,
@@ -327,9 +295,9 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        if self._gif is None and not self._refreshing:
+        if self._video is None and not self._refreshing:
             await self._async_refresh()
-        return self._gif
+        return self._video
 
 
 class SMNSatelliteCountryCamera(_SMNSatelliteAnimationCamera):
@@ -413,20 +381,3 @@ class SMNSatelliteProvinceCamera(_SMNSatelliteAnimationCamera):
             subdivisions=get_department_rings(province),
         )
 
-
-class SMNSatelliteVideoView(HomeAssistantView):
-    """Serves a satellite camera's animation as MP4, at its `video_url` attribute.
-
-    Requires Home Assistant authentication like any /api endpoint (a
-    long-lived token, or the Supervisor token for add-ons such as Hornero).
-    """
-
-    url = f"/api/{DOMAIN}/video/{{entity_id}}"
-    name = f"api:{DOMAIN}:video"
-    requires_auth = True
-
-    async def get(self, request: web.Request, entity_id: str) -> web.Response:
-        camera = request.app[KEY_HASS].data.get(_VIDEOS_KEY, {}).get(entity_id)
-        if camera is None or not camera.video:
-            return web.Response(status=404)
-        return web.Response(body=camera.video, content_type="video/mp4")

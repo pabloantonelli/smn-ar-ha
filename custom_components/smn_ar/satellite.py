@@ -2,8 +2,7 @@
 
 Same Web Mercator tile math as radar.py, against GIBS' public WMTS tiles
 (see const.py for why GIBS). Each animation is rendered once and encoded as
-a GIF (what the camera entity shows) and an MP4 (what gets sent to chat
-apps — see encode_animation).
+a short looping MP4 (see encode_mp4).
 """
 from __future__ import annotations
 
@@ -164,8 +163,8 @@ def _tile_semaphore() -> asyncio.Semaphore:
     An animation used to fire every tile of every frame at once (hundreds
     for the country camera) with a short per-request timeout — on a slower
     link the timeout expired while requests were still queued in the
-    connection pool, those frames got dropped as incomplete, and the GIF
-    ended up with one frame (i.e. not animated). Queuing them behind a
+    connection pool, those frames got dropped as incomplete, and the
+    animation ended up with one frame (i.e. not animated). Queuing them behind a
     semaphore means the timeout only starts once a request is actually
     sent.
     """
@@ -643,35 +642,6 @@ def _render_region_frame(
     return frame.convert("RGB")
 
 
-def _encode_gif(frames: list[Any], frame_ms: int = 450, hold_last_ms: int = 1500) -> bytes:
-    """Encode frames as a looping GIF, without dithering.
-
-    Pillow's default RGB->palette conversion dithers, which turns thin
-    antialiased lines and text into speckled noise once quantized to 256
-    colors. The last frame (the most recent image) is held longer so the
-    loop doesn't feel like it skips straight back to the oldest one.
-    """
-    from PIL import Image
-
-    try:
-        no_dither = Image.Dither.NONE
-    except AttributeError:  # Pillow < 9.1
-        no_dither = Image.NONE
-    paletted = [f.quantize(colors=256, dither=no_dither) for f in frames]
-    durations = [frame_ms] * (len(paletted) - 1) + [hold_last_ms]
-    buffer = io.BytesIO()
-    paletted[0].save(
-        buffer,
-        format="GIF",
-        save_all=True,
-        append_images=paletted[1:],
-        duration=durations,
-        loop=0,
-        disposal=1,
-    )
-    return buffer.getvalue()
-
-
 def _region_view_for(
     rings: list[list[tuple[float, float]]], force_infrared: bool
 ) -> _RegionView:
@@ -690,7 +660,7 @@ async def build_region_animation_frames(
     """Rendered frames (oldest first) of the last SATELLITE_ANIMATION_FRAMES of a whole area.
 
     See the comment at the top of this section for the rendering; encode with
-    encode_animation(). More candidate timestamps than needed are fetched
+    encode_mp4(). More candidate timestamps than needed are fetched
     (SATELLITE_ANIMATION_LOOKBACK_BUFFER) so a few incomplete ones don't
     shrink the animation; the most recent complete ones are kept.
     """
@@ -734,34 +704,20 @@ async def build_region_animation_frames(
 
 # --- Encoding ---------------------------------------------------------------
 
-# Video: crossfaded in-between frames so the loop looks smooth instead of
-# jumping every ~half second. Cheap (a Pillow blend per in-between frame) and
-# MP4/H.264 compresses them well, unlike GIF where every extra frame costs
-# almost a full frame of file size — so the dashboard GIF keeps only the
-# real frames.
+# Crossfaded in-between frames so the loop looks smooth instead of jumping
+# every ~half second. Cheap (a Pillow blend per in-between frame), and
+# H.264 compresses them well.
 _VIDEO_FPS = 12
 _VIDEO_INBETWEENS = 5
 _VIDEO_HOLD_LAST_SECONDS = 1.5
 
 
-def encode_animation(frames: list[Any]) -> dict[str, bytes | None]:
-    """Encode rendered frames as {"gif": ..., "mp4": ...} (blocking — run in an executor).
-
-    The GIF is what the dashboard shows (a camera card renders it in an
-    <img>). The MP4 is for sharing: WhatsApp's "GIFs" are really short
-    looping MP4s, and notification integrations that pick the message type
-    from the camera's content type (e.g. Hornero) send `video/mp4` as a
-    video. `mp4` is None if PyAV isn't available.
-    """
-    return {"gif": _encode_gif(frames), "mp4": _encode_mp4(frames)}
-
-
-def _encode_mp4(frames: list[Any]) -> bytes | None:
+def encode_mp4(frames: list[Any]) -> bytes | None:
     """H.264 MP4 of `frames` with crossfaded in-betweens, or None without PyAV.
 
     PyAV ships with Home Assistant itself (its `stream` integration uses
     it), so this adds no dependency in practice; it's imported lazily so a
-    setup without it still gets the GIF.
+    setup without it just logs a warning instead of failing to load.
     """
     try:
         import av

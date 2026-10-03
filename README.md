@@ -183,7 +183,8 @@ alerta activa cercana dibujada sobre el mapa.
 ### `camera` "Satélite Argentina" / "Satélite provincia" (y sus versiones infrarrojo)
 
 Animaciones con imágenes reales del satélite geoestacionario GOES-East, de
-los últimos ~100 minutos:
+los últimos ~100 minutos, como video MP4 corto en loop (con cuadros
+intermedios para que el movimiento sea fluido):
 
 - **Satélite Argentina**: todo el país, con las provincias dibujadas.
 - **Satélite provincia**: tu provincia (la que el propio SMN resuelve para
@@ -196,17 +197,6 @@ los últimos ~100 minutos:
 
 En todas, un pin marca tu ubicación con la temperatura actual, y una línea
 de tiempo abajo indica qué tan viejo es cada cuadro.
-
-#### Mandarlas por WhatsApp (u otro chat)
-
-La imagen de la cámara es un GIF animado, que se ve en el dashboard pero
-WhatsApp no anima (sus "GIFs" en realidad son videos). Por eso cada cámara
-expone también el atributo **`video_url`**: la misma animación como video
-MP4 fluido (con cuadros intermedios), mucho más liviano. Es un endpoint de
-la API de Home Assistant, así que pide autenticación (un token de acceso
-de larga duración, o el token del Supervisor si lo pide un complemento).
-[Hornero](https://github.com/pabloantonelli/hornero) lo usa solo: al
-pasarle una de estas cámaras, manda el video.
 
 ## Créditos
 
