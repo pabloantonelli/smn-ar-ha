@@ -22,12 +22,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "Configure SMN Weather",
-        "description": "Update your SMN weather settings.",
+        "title": "SMN options",
+        "description": "Distance around your location within which a short-term warning that mentions hail turns on the \"Nearby hail\" sensor.",
         "data": {
-          "latitude": "Latitude",
-          "longitude": "Longitude",
-          "name": "Location name"
+          "hail_radius_km": "Nearby hail radius (km)"
         }
       }
     }
@@ -97,6 +95,9 @@
       },
       "hail_alert": {
         "name": "Hail alert"
+      },
+      "nearby_hail": {
+        "name": "Nearby hail"
       }
     },
     "camera": {

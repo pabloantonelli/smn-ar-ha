@@ -22,12 +22,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "Configurar SMN",
-        "description": "Actualiza la configuración del clima SMN.",
+        "title": "Opciones de SMN",
+        "description": "Distancia alrededor de tu ubicación dentro de la cual un aviso a corto plazo que menciona granizo enciende el sensor \"Granizo cercano\".",
         "data": {
-          "latitude": "Latitud",
-          "longitude": "Longitud",
-          "name": "Nombre de la ubicación"
+          "hail_radius_km": "Radio de granizo cercano (km)"
         }
       }
     }
@@ -97,6 +95,9 @@
       },
       "hail_alert": {
         "name": "Alerta por granizo"
+      },
+      "nearby_hail": {
+        "name": "Granizo cercano"
       }
     },
     "camera": {

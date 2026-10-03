@@ -1,8 +1,8 @@
 """Binary sensor platform for SMN weather alerts."""
 from __future__ import annotations
 
-from datetime import datetime
 import logging
+import math
 from typing import Any
 
 from homeassistant.components.binary_sensor import (
@@ -10,13 +10,21 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME, EntityCategory
+from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ALERT_EVENT_ICONS, ALERT_EVENT_MAP, ALERT_LEVEL_MAP, DOMAIN
+from .const import (
+    ALERT_EVENT_ICONS,
+    ALERT_EVENT_MAP,
+    ALERT_LEVEL_MAP,
+    CONF_HAIL_RADIUS_KM,
+    DEFAULT_HAIL_RADIUS_KM,
+    DOMAIN,
+    wind_cardinal,
+)
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +61,7 @@ async def async_setup_entry(
     # so this is derived by text-matching "granizo" instead — see
     # SMNHailAlertSensor's docstring.
     entities.append(SMNHailAlertSensor(coordinator, config_entry))
+    entities.append(SMNNearbyHailSensor(coordinator, config_entry))
 
     async_add_entities(entities)
 
@@ -432,38 +441,94 @@ _HAIL_KEYWORD = "granizo"
 _HAIL_TORMENTA_EVENT_ID = 41  # ALERT_EVENT_MAP[41] == "tormenta"
 
 
-class SMNHailAlertSensor(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], BinarySensorEntity):
-    """Binary sensor for hail ("granizo"), derived by text matching.
+def _mentions_hail(alert: dict[str, Any]) -> bool:
+    text = f"{alert.get('title') or ''} {alert.get('description') or ''}"
+    return _HAIL_KEYWORD in text.lower()
 
-    Unlike rain/wind/dust/ash/etc., SMN's warning/alert API has no
-    dedicated event id for hail (verified against live data on an active
-    severe-thunderstorm day: hail is only ever mentioned inside the
-    "tormenta" event's (id 41) level description, e.g. "...ocasional
-    granizo...", or in a warning/shortterm alert's free-text title, e.g.
-    "TORMENTAS FUERTES CON LLUVIAS INTENSAS Y OCASIONAL CAIDA DE
-    GRANIZO."). So this sensor checks both of those texts for the word
-    "granizo" instead of following the id-based pattern used by
-    SMNEventAlertSensor.
+
+def _zone_hail_mentions(alerts_data: dict[str, Any]) -> list[str]:
+    """Hail mentions in today's active "tormenta" alert level description.
+
+    That text is SMN's generic description for the alert *level* of the
+    whole zone (e.g. "...ocasional granizo..." appears in many yellow storm
+    alerts), not a forecast of hail at a specific point — so it's reported
+    as context, not used to turn the sensor on.
     """
+    warnings = (alerts_data or {}).get("warnings") or []
+    reports = (alerts_data or {}).get("reports") or []
+    if not warnings:
+        return []
+    active_level = next(
+        (
+            event.get("max_level", 1)
+            for event in warnings[0].get("events", [])
+            if event.get("id") == _HAIL_TORMENTA_EVENT_ID and event.get("max_level", 1) > 1
+        ),
+        None,
+    )
+    if not active_level:
+        return []
+    mentions = []
+    for report in reports:
+        if report.get("event_id") != _HAIL_TORMENTA_EVENT_ID:
+            continue
+        for level_data in report.get("levels", []):
+            description = level_data.get("description") or ""
+            if level_data.get("level") == active_level and _HAIL_KEYWORD in description.lower():
+                mentions.append(description.strip())
+    return mentions
 
+
+def _distance_to_alert_km(
+    latitude: float, longitude: float, alert: dict[str, Any]
+) -> tuple[float, float] | None:
+    """(distance in km, bearing in degrees) from a point to an alert's polygon.
+
+    0 km when the point is inside it. Uses a local equirectangular
+    projection around the point — accurate to well under 1% at the few
+    hundred km this is used for.
+    """
+    rings = ((alert.get("geometry") or {}).get("coordinates")) or []
+    km_per_deg_lat = 110.574
+    km_per_deg_lon = 111.320 * math.cos(math.radians(latitude))
+    best: tuple[float, float] | None = None
+    for ring in rings:
+        points = [((lon - longitude) * km_per_deg_lon, (lat - latitude) * km_per_deg_lat) for lon, lat in ring]
+        if len(points) < 3:
+            continue
+        inside = False
+        for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1]):
+            if (y0 > 0) != (y1 > 0) and 0 < x0 + (0 - y0) * (x1 - x0) / (y1 - y0):
+                inside = not inside
+            dx, dy = x1 - x0, y1 - y0
+            length_sq = dx * dx + dy * dy
+            t = 0.0 if length_sq == 0 else max(0.0, min(1.0, -(x0 * dx + y0 * dy) / length_sq))
+            nx, ny = x0 + t * dx, y0 + t * dy
+            distance = math.hypot(nx, ny)
+            if best is None or distance < best[0]:
+                best = (distance, math.degrees(math.atan2(nx, ny)) % 360)
+        if inside:
+            return 0.0, 0.0
+    return best
+
+
+class _SMNHailBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.SAFETY
     _attr_has_entity_name = True
-    _attr_translation_key = "hail_alert"
     _attr_icon = "mdi:weather-hail"
 
     def __init__(
         self,
         coordinator: ArgentinaSMNDataUpdateCoordinator,
         config_entry: ConfigEntry,
+        unique_id_suffix: str,
     ) -> None:
-        """Initialize the sensor."""
         super().__init__(coordinator)
         self._config_entry = config_entry
-        self._attr_unique_id = f"{config_entry.entry_id}_hail_alert"
+        self._attr_unique_id = f"{config_entry.entry_id}{unique_id_suffix}"
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information."""
         return DeviceInfo(
             identifiers={(DOMAIN, self._config_entry.entry_id)},
             name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
@@ -471,52 +536,88 @@ class SMNHailAlertSensor(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], B
             entry_type=DeviceEntryType.SERVICE,
         )
 
-    def _matching_texts(self) -> list[str]:
-        """Return every source text that mentions "granizo" right now."""
-        matches: list[str] = []
 
-        for alert in self.coordinator.data.shortterm_alerts or []:
-            title = alert.get("title") or ""
-            if _HAIL_KEYWORD in title.lower():
-                matches.append(title.strip())
+class SMNHailAlertSensor(_SMNHailBase):
+    """On when a short-term warning covering the exact location mentions hail.
 
-        alerts_data = self.coordinator.data.alerts or {}
-        warnings = alerts_data.get("warnings") or []
-        reports = alerts_data.get("reports") or []
-        if warnings:
-            events = warnings[0].get("events", [])
-            active_level = next(
-                (
-                    event.get("max_level", 1)
-                    for event in events
-                    if event.get("id") == _HAIL_TORMENTA_EVENT_ID
-                    and event.get("max_level", 1) > 1
-                ),
-                None,
-            )
-            if active_level:
-                for report in reports:
-                    if report.get("event_id") != _HAIL_TORMENTA_EVENT_ID:
-                        continue
-                    for level_data in report.get("levels", []):
-                        if level_data.get("level") != active_level:
-                            continue
-                        description = level_data.get("description") or ""
-                        if _HAIL_KEYWORD in description.lower():
-                            matches.append(description.strip())
+    SMN's warning API has no dedicated hail event. The precise signal is a
+    warning/shortterm alert for this location (SMN's own point-in-polygon
+    test against the configured coordinates) whose text says "granizo".
+    The zone-wide "tormenta" level description is exposed as context only
+    (see _zone_hail_mentions for why it isn't precise enough).
+    """
 
-        return matches
+    _attr_translation_key = "hail_alert"
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_hail_alert")
+
+    def _matching(self) -> list[dict[str, Any]]:
+        return [a for a in self.coordinator.data.shortterm_alerts or [] if _mentions_hail(a)]
 
     @property
     def is_on(self) -> bool:
-        """Return True if any active alert mentions hail."""
-        return bool(self._matching_texts())
+        return bool(self._matching())
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return additional state attributes."""
-        matches = self._matching_texts()
+        matching = self._matching()
         return {
-            "match_count": len(matches),
-            "matching_texts": matches,
+            "alerts": [
+                {"title": (a.get("title") or "").strip(), "end_date": a.get("end_date")}
+                for a in matching
+            ],
+            "zone_alert_mentions": _zone_hail_mentions(self.coordinator.data.alerts),
         }
+
+
+class SMNNearbyHailSensor(_SMNHailBase):
+    """On when a short-term warning that mentions hail is within the configured radius.
+
+    Uses the nationwide warning/shortterm list (with its polygons) to find
+    the closest hail warning to the configured location — an early heads-up
+    before a storm reaches the exact point "Alerta por granizo" checks.
+    """
+
+    _attr_translation_key = "nearby_hail"
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_nearby_hail")
+
+    @property
+    def _radius_km(self) -> float:
+        return float(self._config_entry.options.get(CONF_HAIL_RADIUS_KM, DEFAULT_HAIL_RADIUS_KM))
+
+    def _nearest(self) -> tuple[float, float, dict[str, Any]] | None:
+        latitude = self._config_entry.data[CONF_LATITUDE]
+        longitude = self._config_entry.data[CONF_LONGITUDE]
+        nearest = None
+        for alert in self.coordinator.data.nationwide_shortterm_alerts or []:
+            if not _mentions_hail(alert):
+                continue
+            result = _distance_to_alert_km(latitude, longitude, alert)
+            if result and (nearest is None or result[0] < nearest[0]):
+                nearest = (result[0], result[1], alert)
+        return nearest
+
+    @property
+    def is_on(self) -> bool:
+        nearest = self._nearest()
+        return nearest is not None and nearest[0] <= self._radius_km
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs: dict[str, Any] = {"radius_km": self._radius_km}
+        nearest = self._nearest()
+        if nearest is None:
+            return attrs
+        distance, bearing, alert = nearest
+        attrs.update(
+            {
+                "distance_km": round(distance, 1),
+                "direction": None if distance == 0 else wind_cardinal(bearing),
+                "title": (alert.get("title") or "").strip(),
+                "end_date": alert.get("end_date"),
+            }
+        )
+        return attrs

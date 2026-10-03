@@ -6,13 +6,20 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
 
 from .const import (
+    CONF_HAIL_RADIUS_KM,
     CONF_PROXY_URL,
+    DEFAULT_HAIL_RADIUS_KM,
     DEFAULT_HOME_LATITUDE,
     DEFAULT_HOME_LONGITUDE,
     DEFAULT_PROXY_URL,
@@ -50,6 +57,11 @@ class ArgentinaSMNConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for SMN Weather."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return ArgentinaSMNOptionsFlow(config_entry)
 
     @callback
     def _async_check_unique_id(
@@ -182,3 +194,27 @@ class ArgentinaSMNConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_home")
 
         return await self.async_step_user()
+
+
+class ArgentinaSMNOptionsFlow(OptionsFlow):
+    """Options: radius for the "Granizo cercano" sensor."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        # Not `self.config_entry`: HA sets that itself since 2024.11 and
+        # warns if a flow assigns it; this name works on older versions too.
+        self._entry = config_entry
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        current = self._entry.options.get(CONF_HAIL_RADIUS_KM, DEFAULT_HAIL_RADIUS_KM)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HAIL_RADIUS_KM, default=current): vol.All(
+                        vol.Coerce(int), vol.Range(min=5, max=500)
+                    ),
+                }
+            ),
+        )

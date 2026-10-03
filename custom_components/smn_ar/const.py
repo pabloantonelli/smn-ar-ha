@@ -31,6 +31,9 @@ EVENT_SHORTTERM_ALERT_CHANGED: Final = f"{DOMAIN}_shortterm_alert_changed"
 # Config keys
 CONF_PROXY_URL: Final = "proxy_url"
 CONF_LOCATION_ID: Final = "location_id"
+# Options: radius around the configured location for "Granizo cercano".
+CONF_HAIL_RADIUS_KM: Final = "hail_radius_km"
+DEFAULT_HAIL_RADIUS_KM: Final = 50
 
 # Default local address of the "smn-proxy" HA add-on (see addons/smn_proxy).
 # The add-on solves SMN's Cloudflare challenge and forwards requests to ws1
