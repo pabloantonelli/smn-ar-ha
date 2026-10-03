@@ -68,21 +68,10 @@ filtrar por el nombre del dispositivo o una palabra del nombre visible.
 | `sensor` | Pronóstico de mañana | Condición, máxima y mínima de mañana | 30 min |
 | `sensor` | Próxima lluvia | Cuándo es el próximo período con probabilidad de lluvia relevante | 30 min |
 | `camera` | Radar | Foto del radar de precipitación, con clima actual y zonas de alerta | 10 min |
-| `camera` | Satélite | Foto satelital alrededor de tu ubicación, con flecha de deriva de nubes | 10 min |
-| `camera` | Satélite Infrarrojo | Igual, en infrarrojo (ideal para ver la estructura de las tormentas) | 10 min |
-| `camera` | Satélite (animado) | GIF de la última hora y media de imágenes satelitales | 20 min |
-| `camera` | Satélite Infrarrojo (animado) | Igual, en infrarrojo | 20 min |
-| `camera` | Satélite (video) / Satélite Infrarrojo (video) | La misma animación como video MP4 fluido, para mandar por WhatsApp | 20 min |
-| `camera` | Satélite Argentina | Foto satelital de todo el país | 15 min |
-| `camera` | Satélite Argentina Infrarrojo | Igual, en infrarrojo | 15 min |
-| `camera` | Satélite Argentina (animado) | GIF de todo el país | 30 min |
-| `camera` | Satélite Argentina Infrarrojo (animado) | Igual, en infrarrojo | 30 min |
-| `camera` | Satélite Argentina (video) / Satélite Argentina Infrarrojo (video) | Video MP4 de todo el país | 30 min |
-| `camera` | Satélite provincia | Foto satelital de tu provincia (según la resuelve SMN) | 15 min |
-| `camera` | Satélite provincia Infrarrojo | Igual, en infrarrojo | 15 min |
-| `camera` | Satélite provincia (animado) | GIF de tu provincia | 30 min |
-| `camera` | Satélite provincia Infrarrojo (animado) | Igual, en infrarrojo | 30 min |
-| `camera` | Satélite provincia (video) / Satélite provincia Infrarrojo (video) | Video MP4 de tu provincia | 30 min |
+| `camera` | Satélite Argentina | Animación satelital de todo el país (últimos ~100 min) | 20 min |
+| `camera` | Satélite Argentina Infrarrojo | Igual, en infrarrojo | 20 min |
+| `camera` | Satélite provincia | Animación satelital de tu provincia (según la resuelve SMN) | 20 min |
+| `camera` | Satélite provincia Infrarrojo | Igual, en infrarrojo | 20 min |
 
 ### `weather`: clima actual y pronóstico
 
@@ -191,77 +180,33 @@ Foto con el radar de precipitación de tu zona (~300km alrededor),
 temperatura y pronóstico de las próximas horas, y cualquier zona de
 alerta activa cercana dibujada sobre el mapa.
 
-### `camera` "Satélite" / "Satélite Argentina" / "Satélite provincia" (y sus variantes infrarrojo/animado/video)
+### `camera` "Satélite Argentina" / "Satélite provincia" (y sus versiones infrarrojo)
 
-Imágenes reales del satélite geoestacionario GOES-East:
+Animaciones con imágenes reales del satélite geoestacionario GOES-East, de
+los últimos ~100 minutos:
 
-- **Satélite**: zoom fijo alrededor de tu ubicación (~700km), con una
-  flecha que indica hacia dónde se están desplazando las nubes cuando hay
-  una señal confiable (no es un dato de viento real, es aproximado).
-- **Satélite Argentina** / **Satélite provincia**: zoom ajustado para que
-  entre todo el país o toda tu provincia en el cuadro, con las provincias
-  (en el mapa de Argentina) o los departamentos/partidos (en el de tu
-  provincia) dibujados como referencia. "Satélite provincia" usa la
-  provincia que el propio SMN resuelve para tu ubicación.
-- Las versiones normales usan **color real**, que de noche pasa solo a
-  una vista nocturna (nubes en gris sobre las luces de las ciudades).
-- **Infrarrojo**: la misma vista con la capa infrarroja, que muestra la
-  temperatura de los topes de nube — ideal para ver la estructura e
-  intensidad de una tormenta. Trae una leyenda de colores en la esquina.
-- **Animado**: un GIF con los últimos ~100 minutos, para ver en el
-  dashboard o compartir como URL (ver abajo).
-- **Video**: la misma animación como **video MP4 fluido** (con cuadros
-  intermedios), más liviano que el GIF. Es el formato que WhatsApp usa
-  para sus "GIFs": las integraciones de notificación que mandan la
-  entidad de cámara como video la envían animada. No se ve en una
-  tarjeta de cámara del dashboard (para eso está la versión animada).
+- **Satélite Argentina**: todo el país, con las provincias dibujadas.
+- **Satélite provincia**: tu provincia (la que el propio SMN resuelve para
+  tu ubicación), con sus departamentos/partidos dibujados.
+- Las versiones normales son en **color real**; de noche pasan solas a una
+  vista nocturna (nubes en gris sobre las luces de las ciudades).
+- **Infrarrojo**: muestra la temperatura de los topes de nube — ideal para
+  ver la estructura e intensidad de una tormenta. Trae una leyenda de
+  colores.
 
-En todas, un pin marca tu ubicación exacta con la temperatura actual, y
-las animaciones muestran una línea de tiempo abajo indicando qué tan
-viejo es cada cuadro.
+En todas, un pin marca tu ubicación con la temperatura actual, y una línea
+de tiempo abajo indica qué tan viejo es cada cuadro.
 
-#### Cómo obtener la URL del GIF animado para compartirlo
+#### Mandarlas por WhatsApp (u otro chat)
 
-La cámara "Satélite (animado)" (y, en general, cualquier `camera` de Home
-Assistant) expone su imagen actual en el atributo `entity_picture`, que ya
-viene como una URL firmada por HA (el mismo mecanismo que usan las
-tarjetas de cámara del dashboard — no hace falta login para acceder a
-ella).
-
-1. **Encontrar el `entity_id` exacto**: Ajustes → Herramientas de
-   desarrollo → Estados, buscar "Satélite (animado)" (ver la nota sobre
-   `entity_id` más arriba en este README si no aparece con ese nombre
-   exacto).
-2. **Ver la URL**: en esa misma pantalla, mirar el atributo
-   `entity_picture` del estado — algo como
-   `/api/camera_proxy/camera.<tu_nombre>_satelite_animado?token=xxxxxxxx`.
-   Ese token es temporal y HA lo renueva solo; no hace falta (ni conviene)
-   guardarlo como fijo en ningún lado.
-3. **Convertirla en una URL completa y accesible desde afuera de tu red**:
-   anteponer tu URL externa de Home Assistant (Ajustes → Sistema →
-   General → "URL externa de Home Assistant", o tu dominio de Nabu Casa si
-   la usás):
-   ```
-   https://tu-dominio-externo.com/api/camera_proxy/camera.<tu_nombre>_satelite_animado?token=xxxxxxxx
-   ```
-   Si HA no tiene una URL externa configurada (sin Nabu Casa, reverse
-   proxy o port-forward), esa URL solo funciona dentro de tu red local —
-   eso depende de tu configuración de HA, no de esta integración.
-
-**Para automatizar el envío** (ej. mandarla por Telegram/WhatsApp cada
-tanto), en una plantilla Jinja de una automatización:
-
-```yaml
-{{ state_attr('camera.<tu_nombre>_satelite_animado', 'entity_picture') }}
-```
-
-Esto da el *path* relativo (`/api/camera_proxy/...?token=...`); si el
-servicio al que se la mandás necesita la URL absoluta, hay que
-concatenarle el dominio externo a mano en la plantilla, ej.:
-
-```yaml
-{{ 'https://tu-dominio-externo.com' ~ state_attr('camera.<tu_nombre>_satelite_animado', 'entity_picture') }}
-```
+La imagen de la cámara es un GIF animado, que se ve en el dashboard pero
+WhatsApp no anima (sus "GIFs" en realidad son videos). Por eso cada cámara
+expone también el atributo **`video_url`**: la misma animación como video
+MP4 fluido (con cuadros intermedios), mucho más liviano. Es un endpoint de
+la API de Home Assistant, así que pide autenticación (un token de acceso
+de larga duración, o el token del Supervisor si lo pide un complemento).
+[Hornero](https://github.com/pabloantonelli/hornero) lo usa solo: al
+pasarle una de estas cámaras, manda el video.
 
 ## Créditos
 

@@ -7,6 +7,6 @@
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/pabloantonelli/smn-ar-ha/issues",
-  "requirements": ["Pillow>=10.0.0", "numpy>=1.24.0"],
-  "version": "1.4.0"
+  "requirements": ["Pillow>=10.0.0"],
+  "version": "1.5.0"
 }

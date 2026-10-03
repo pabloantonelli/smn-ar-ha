@@ -115,9 +115,9 @@ RADAR_UPDATE_INTERVAL: Final = 600  # 10 min, matches RainViewer's frame cadence
 # NOAA STAR publishes, but exposed as a real zoomable tile pyramid in
 # standard Web Mercator — unlike NOAA STAR's cdn.star.nesdis.noaa.gov,
 # which only serves a handful of fixed-size full-sector JPEGs with no
-# lat/lon georeference. GIBS updates every ~10 min. GeoColor (true color)
-# goes dark at night, so Band13 clean infrared (shows cloud-top temperature,
-# works day and night) is used as the night fallback.
+# lat/lon georeference. GIBS updates every ~10 min. GeoColor includes its own
+# night view; Band13 clean infrared (cloud-top temperature) is the separate
+# "Infrarrojo" view.
 GIBS_TILE_URL_TEMPLATE: Final = (
     "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
     "{layer}/default/{time}/{matrix_set}/{z}/{y}/{x}.png"
@@ -127,27 +127,18 @@ GIBS_LAYER_INFRARED: Final = "GOES-East_ABI_Band13_Clean_Infrared"
 GIBS_MATRIX_SET_GEOCOLOR: Final = "GoogleMapsCompatible_Level7"
 GIBS_MATRIX_SET_INFRARED: Final = "GoogleMapsCompatible_Level6"
 GIBS_ATTRIBUTION: Final = "Imagery by NASA GIBS / NOAA GOES-East"
-SATELLITE_ZOOM: Final = 5  # capped by GIBS' max level (7 GeoColor / 6 IR)
-SATELLITE_TILE_GRID: Final = 3  # 3x3 tiles (~700km across at zoom 5)
-SATELLITE_TILE_SIZE: Final = 256
-SATELLITE_UPDATE_INTERVAL: Final = 600  # 10 min, matches GIBS' frame cadence
-# How many past 10-min frames the animated GIF camera stitches together.
-SATELLITE_ANIMATION_FRAMES: Final = 10  # last ~100 min (GIBS' 10-min cadence)
-SATELLITE_ANIMATION_UPDATE_INTERVAL: Final = 1200  # 20 min: N tile fetches, expensive
-# Extra older candidate timestamps fetched beyond SATELLITE_ANIMATION_FRAMES,
-# so a few incomplete frames (GIBS still publishing some of a timestamp's
-# tiles — more likely the bigger the tile grid, e.g. the country camera's
-# 6x6) don't silently shrink the animation below its target frame count;
-# the most recent SATELLITE_ANIMATION_FRAMES *complete* ones are kept.
-SATELLITE_ANIMATION_LOOKBACK_BUFFER: Final = 6
-
-# GIBS' max zoom level per layer — same numbers as GIBS_MATRIX_SET_*, kept
-# separately as plain ints since the region cameras need to search zoom
-# levels numerically to fit a province/country bounding box.
+# GIBS' max zoom level per layer (same numbers as GIBS_MATRIX_SET_*).
 GIBS_MAX_ZOOM_GEOCOLOR: Final = 7
 GIBS_MAX_ZOOM_INFRARED: Final = 6
-SATELLITE_REGION_UPDATE_INTERVAL: Final = 900  # 15 min
-SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL: Final = 1800  # 30 min: N frames × N tiles, pricier still
+SATELLITE_TILE_SIZE: Final = 256
+# How many past 10-min frames each satellite animation stitches together.
+SATELLITE_ANIMATION_FRAMES: Final = 10  # last ~100 min
+# Extra older candidate timestamps fetched beyond SATELLITE_ANIMATION_FRAMES,
+# so a few incomplete frames (GIBS still publishing some of a timestamp's
+# tiles) don't shrink the animation below its target frame count; the most
+# recent SATELLITE_ANIMATION_FRAMES *complete* ones are kept.
+SATELLITE_ANIMATION_LOOKBACK_BUFFER: Final = 6
+SATELLITE_ANIMATION_UPDATE_INTERVAL: Final = 1200  # 20 min
 
 # Default onboarding locations (Buenos Aires)
 DEFAULT_HOME_LATITUDE: Final = -34.6037

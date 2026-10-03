@@ -1,25 +1,25 @@
-"""Camera platform: precipitation radar (RainViewer) + SMN's own alert zones,
-plus NASA GIBS satellite imagery (local/country/province, GeoColor/infrared,
-static/animated).
+"""Camera platform: precipitation radar (RainViewer) + SMN's alert zones,
+and animated NASA GIBS satellite views of the country and of the configured
+location's province (color and infrared).
 
 Not sourced from SMN's map servers — see radar.py / const.py for why. The
-alert zone polygons drawn on top ARE from SMN though (the same
-warning/shortterm data already used by sensor.py), which is what makes the
-image useful even when RainViewer's Argentina coverage is thin.
+alert zone polygons drawn on the radar ARE from SMN though (the same
+warning/shortterm data used by sensor.py).
 """
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable
 from datetime import timedelta
 import logging
-import time
 from typing import Any
 
+from aiohttp import web
+
 from homeassistant.components.camera import Camera
+from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -38,21 +38,20 @@ from .const import (
     RADAR_UPDATE_INTERVAL,
     RAINVIEWER_ATTRIBUTION,
     SATELLITE_ANIMATION_UPDATE_INTERVAL,
-    SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL,
-    SATELLITE_REGION_UPDATE_INTERVAL,
-    SATELLITE_UPDATE_INTERVAL,
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .radar import build_radar_snapshot_jpeg
-from .satellite import (
-    build_region_animation_frames,
-    build_region_snapshot_jpeg,
-    build_satellite_animation_frames,
-    build_satellite_snapshot_jpeg,
-    encode_animation,
-)
+from .satellite import build_region_animation_frames, encode_animation
 
 _LOGGER = logging.getLogger(__name__)
+
+try:
+    from homeassistant.helpers.http import KEY_HASS
+except ImportError:  # Home Assistant < 2024.2
+    KEY_HASS = "hass"
+
+_VIDEOS_KEY = f"{DOMAIN}_videos"
+_VIDEO_VIEW_KEY = f"{DOMAIN}_video_view"
 
 
 async def async_setup_entry(
@@ -60,7 +59,7 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the SMN radar and satellite cameras."""
+    """Set up the radar camera and the four animated satellite cameras."""
     coordinator: ArgentinaSMNDataUpdateCoordinator = hass.data[DOMAIN][
         config_entry.entry_id
     ]
@@ -68,62 +67,36 @@ async def async_setup_entry(
     longitude = config_entry.data[CONF_LONGITUDE]
     name = config_entry.data.get(CONF_NAME, "SMN")
 
+    if not hass.data.get(_VIDEO_VIEW_KEY):
+        hass.http.register_view(SMNSatelliteVideoView())
+        hass.data[_VIDEO_VIEW_KEY] = True
+
     entities: list[Camera] = [
         SMNRadarCamera(coordinator, config_entry, name, latitude, longitude),
     ]
     for force_infrared in (False, True):
         entities.append(
-            SMNSatelliteCamera(
-                coordinator, config_entry, name, latitude, longitude, force_infrared
-            )
-        )
-        for as_video in (False, True):
-            entities.append(
-                SMNSatelliteAnimationCamera(
-                    coordinator,
-                    config_entry,
-                    name,
-                    latitude,
-                    longitude,
-                    force_infrared,
-                    as_video,
-                )
-            )
-        entities.append(
             SMNSatelliteCountryCamera(
                 coordinator, config_entry, name, latitude, longitude, force_infrared
             )
         )
-        for as_video in (False, True):
-            entities.append(
-                SMNSatelliteCountryAnimationCamera(
-                    coordinator,
-                    config_entry,
-                    name,
-                    latitude,
-                    longitude,
-                    force_infrared,
-                    as_video,
-                )
-            )
         entities.append(
             SMNSatelliteProvinceCamera(
                 coordinator, config_entry, name, latitude, longitude, force_infrared
             )
         )
-        for as_video in (False, True):
-            entities.append(
-                SMNSatelliteProvinceAnimationCamera(
-                    coordinator,
-                    config_entry,
-                    name,
-                    latitude,
-                    longitude,
-                    force_infrared,
-                    as_video,
-                )
-            )
+    _remove_stale_cameras(hass, config_entry, {entity.unique_id for entity in entities})
     async_add_entities(entities)
+
+
+def _remove_stale_cameras(
+    hass: HomeAssistant, config_entry: ConfigEntry, current_unique_ids: set[str | None]
+) -> None:
+    """Drop camera entities earlier versions created (static/local/GIF/video variants)."""
+    registry = er.async_get(hass)
+    for entry in er.async_entries_for_config_entry(registry, config_entry.entry_id):
+        if entry.domain == "camera" and entry.unique_id not in current_unique_ids:
+            registry.async_remove(entry.entity_id)
 
 
 class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
@@ -251,37 +224,47 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
         return self._cached_image
 
 
-class _SMNSatelliteCameraBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
-    """Shared plumbing for every GIBS-backed camera below.
 
-    Handles the parts identical across all of them: device_info, the
-    background refresh loop/interval, and the "build once, serve from
-    cache" pattern already used by SMNRadarCamera (see its docstring for
-    why). Subclasses only implement `_build_image()`.
+
+class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
+    """Animated satellite view: a GIF as the camera image, plus an MP4 of it.
+
+    The GIF is what dashboards show (camera cards render the camera image
+    in an <img>, which can't play video). The MP4 is for chat apps:
+    WhatsApp's "GIFs" are short looping MP4s, so a GIF sent there arrives
+    as a still photo. It's served at the `video_url` attribute (see
+    SMNSatelliteVideoView), so a notifier can send the video instead.
+
+    Built in the background and served from cache, so a request never waits
+    on GIBS (the radar camera does the same — see its docstring).
     """
 
     _attr_has_entity_name = True
     _attr_attribution = GIBS_ATTRIBUTION
-    content_type = "image/jpeg"
 
     def __init__(
         self,
         coordinator: ArgentinaSMNDataUpdateCoordinator,
         config_entry: ConfigEntry,
-        unique_id_suffix: str,
-        name_suffix: str,
-        update_interval: int,
-        translation_key: str,
+        name: str,
+        kind: str,
+        label: str,
+        latitude: float,
+        longitude: float,
+        force_infrared: bool,
     ) -> None:
         super().__init__(coordinator)
         Camera.__init__(self)
-        self.content_type = self.__class__.content_type
-        self._attr_translation_key = translation_key
-        self._attr_unique_id = f"{config_entry.entry_id}{unique_id_suffix}"
-        self._attr_name = name_suffix
+        self.content_type = "image/gif"
+        self._attr_translation_key = kind
+        self._attr_unique_id = f"{config_entry.entry_id}_{kind}"
+        self._attr_name = f"{name} {label}"
         self._config_entry = config_entry
-        self._update_interval = update_interval
-        self._cached_image: bytes | None = None
+        self._latitude = latitude
+        self._longitude = longitude
+        self._force_infrared = force_infrared
+        self._gif: bytes | None = None
+        self.video: bytes | None = None
         self._refreshing = False
 
     @property
@@ -293,21 +276,29 @@ class _SMNSatelliteCameraBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinato
             entry_type=DeviceEntryType.SERVICE,
         )
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self.video:
+            return {}
+        return {"video_url": f"/api/{DOMAIN}/video/{self.entity_id}"}
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        self.hass.data.setdefault(_VIDEOS_KEY, {})[self.entity_id] = self
+        self.async_on_remove(lambda: self.hass.data[_VIDEOS_KEY].pop(self.entity_id, None))
         self.hass.async_create_task(self._async_refresh())
         self.async_on_remove(
             async_track_time_interval(
                 self.hass,
                 self._async_scheduled_refresh,
-                timedelta(seconds=self._update_interval),
+                timedelta(seconds=SATELLITE_ANIMATION_UPDATE_INTERVAL),
             )
         )
 
     async def _async_scheduled_refresh(self, _now=None) -> None:
         await self._async_refresh()
 
-    async def _build_image(self) -> bytes | None:
+    async def _build_frames(self) -> list[Any] | None:
         raise NotImplementedError
 
     async def _async_refresh(self) -> None:
@@ -315,18 +306,20 @@ class _SMNSatelliteCameraBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinato
             return
         self._refreshing = True
         try:
-            image = await self._build_image()
-            if image:
-                self._cached_image = image
-            elif not self._cached_image:
+            frames = await self._build_frames()
+            if frames:
+                encoded = await self.hass.async_add_executor_job(encode_animation, frames)
+                self._gif = encoded["gif"]
+                self.video = encoded["mp4"]
+                self.async_write_ha_state()
+            elif not self._gif:
                 _LOGGER.warning(
-                    "No image available yet for %s (GIBS fetch failed and no "
-                    "cached frame exists)",
+                    "No satellite animation available yet for %s (GIBS fetch failed)",
                     self.entity_id or self._attr_unique_id,
                 )
         except Exception as err:  # noqa: BLE001
             _LOGGER.error(
-                "Error building image for %s: %s", self._attr_unique_id, err, exc_info=True
+                "Error building animation for %s: %s", self._attr_unique_id, err, exc_info=True
             )
         finally:
             self._refreshing = False
@@ -334,19 +327,13 @@ class _SMNSatelliteCameraBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinato
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        if self._cached_image is None and not self._refreshing:
+        if self._gif is None and not self._refreshing:
             await self._async_refresh()
-        return self._cached_image
+        return self._gif
 
 
-class SMNSatelliteCamera(_SMNSatelliteCameraBase):
-    """Latest NASA GIBS GOES-East satellite frame, with an estimated cloud-drift arrow.
-
-    Static JPEG for the same attachment-compatibility reason as the radar
-    camera — see SMNRadarCamera's docstring. GeoColor (which has its own
-    night view), or clean infrared when `force_infrared` is set — the
-    separate "Satélite Infrarrojo" entity (see satellite.py's _layer_for).
-    """
+class SMNSatelliteCountryCamera(_SMNSatelliteAnimationCamera):
+    """Animation of all of Argentina, with province borders and the location pin."""
 
     def __init__(
         self,
@@ -356,266 +343,6 @@ class SMNSatelliteCamera(_SMNSatelliteCameraBase):
         latitude: float,
         longitude: float,
         force_infrared: bool = False,
-    ) -> None:
-        suffix = "_satellite_infrared" if force_infrared else "_satellite"
-        label = "Satélite Infrarrojo" if force_infrared else "Satélite"
-        super().__init__(
-            coordinator,
-            config_entry,
-            suffix,
-            f"{name} {label}",
-            SATELLITE_UPDATE_INTERVAL,
-            "satellite_infrared" if force_infrared else "satellite",
-        )
-        self._latitude = latitude
-        self._longitude = longitude
-        self._force_infrared = force_infrared
-
-    async def _build_image(self) -> bytes | None:
-        data = self.coordinator.data
-        current_weather = data.current_weather_data if data else None
-        session = async_get_clientsession(self.hass)
-        return await build_satellite_snapshot_jpeg(
-            session,
-            self._latitude,
-            self._longitude,
-            force_infrared=self._force_infrared,
-            current_weather=current_weather,
-        )
-
-
-class SMNSatelliteCountryCamera(_SMNSatelliteCameraBase):
-    """Whole-Argentina satellite view, zoomed to fit the country's own outline.
-
-    Unlike SMNSatelliteCamera (fixed zoom around one lat/lon), the zoom
-    here is computed from the country outline's bounding box — see
-    satellite.py's build_region_snapshot_jpeg — so all of Argentina is
-    actually visible, not just the ~700km around the configured location.
-    The configured location is still marked on it (a small pin, see
-    satellite.py's _draw_location_pin), since it's usually a single point
-    somewhere inside that whole-country frame.
-    """
-
-    def __init__(
-        self,
-        coordinator: ArgentinaSMNDataUpdateCoordinator,
-        config_entry: ConfigEntry,
-        name: str,
-        latitude: float,
-        longitude: float,
-        force_infrared: bool = False,
-    ) -> None:
-        suffix = "_satellite_country_infrared" if force_infrared else "_satellite_country"
-        label = "Satélite Argentina Infrarrojo" if force_infrared else "Satélite Argentina"
-        super().__init__(
-            coordinator,
-            config_entry,
-            suffix,
-            f"{name} {label}",
-            SATELLITE_REGION_UPDATE_INTERVAL,
-            "satellite_country_infrared" if force_infrared else "satellite_country",
-        )
-        self._latitude = latitude
-        self._longitude = longitude
-        self._force_infrared = force_infrared
-
-    async def _build_image(self) -> bytes | None:
-        data = self.coordinator.data
-        current_weather = data.current_weather_data if data else None
-        session = async_get_clientsession(self.hass)
-        return await build_region_snapshot_jpeg(
-            session,
-            get_country_rings(),
-            force_infrared=self._force_infrared,
-            pin=(self._latitude, self._longitude),
-            current_weather=current_weather,
-            subdivisions=get_all_province_rings(),
-        )
-
-
-class SMNSatelliteProvinceCamera(_SMNSatelliteCameraBase):
-    """Whole-province satellite view, zoomed to fit the configured location's province.
-
-    The province is whatever SMN resolves for the configured location
-    (coordinator.data.current_weather_data["province"], the same field the
-    other cameras' fallback logic checks) — not user-configurable here, so
-    this camera just tracks wherever the integration itself is set up for.
-    Until that province is known and matches the bundled outline dataset
-    (see boundaries.py), there's nothing to build; the entity simply has
-    no image yet rather than falling back to the country view, which would
-    be confusing under a "province" name.
-    """
-
-    def __init__(
-        self,
-        coordinator: ArgentinaSMNDataUpdateCoordinator,
-        config_entry: ConfigEntry,
-        name: str,
-        latitude: float,
-        longitude: float,
-        force_infrared: bool = False,
-    ) -> None:
-        suffix = "_satellite_province_infrared" if force_infrared else "_satellite_province"
-        label = "Satélite provincia Infrarrojo" if force_infrared else "Satélite provincia"
-        super().__init__(
-            coordinator,
-            config_entry,
-            suffix,
-            f"{name} {label}",
-            SATELLITE_REGION_UPDATE_INTERVAL,
-            "satellite_province_infrared" if force_infrared else "satellite_province",
-        )
-        self._latitude = latitude
-        self._longitude = longitude
-        self._force_infrared = force_infrared
-
-    async def _build_image(self) -> bytes | None:
-        data = self.coordinator.data
-        current_weather = data.current_weather_data if data else None
-        province = (current_weather or {}).get("province")
-        rings = get_province_rings(province) if province else None
-        if not rings:
-            _LOGGER.debug(
-                "No matching province outline yet for %r, skipping refresh", province
-            )
-            return None
-
-        session = async_get_clientsession(self.hass)
-        return await build_region_snapshot_jpeg(
-            session,
-            rings,
-            force_infrared=self._force_infrared,
-            pin=(self._latitude, self._longitude),
-            current_weather=current_weather,
-            subdivisions=get_department_rings(province),
-        )
-
-
-# Animated cameras: each animation is built once and encoded both as a GIF
-# (the "(animado)" camera, for dashboards) and an MP4 (the "(video)" camera,
-# for sharing — see satellite.encode_animation). Both entities of a pair ask
-# for the same key, so whichever refreshes first does the work and the other
-# reuses it instead of fetching every frame from GIBS again.
-_ANIMATION_CACHE: dict[str, tuple[float, dict[str, bytes | None]]] = {}
-_ANIMATION_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-async def _shared_animation(
-    hass: HomeAssistant,
-    key: str,
-    build_frames: Callable[[], Awaitable[list[Any] | None]],
-    max_age: float,
-) -> dict[str, bytes | None] | None:
-    lock = _ANIMATION_LOCKS.setdefault(key, asyncio.Lock())
-    async with lock:
-        cached = _ANIMATION_CACHE.get(key)
-        if cached and time.monotonic() - cached[0] < max_age:
-            return cached[1]
-        frames = await build_frames()
-        if not frames:
-            return None
-        encoded = await hass.async_add_executor_job(encode_animation, frames)
-        _ANIMATION_CACHE[key] = (time.monotonic(), encoded)
-        return encoded
-
-
-class _SMNSatelliteAnimationBase(_SMNSatelliteCameraBase):
-    """GIF ("(animado)") or MP4 ("(video)") version of one satellite animation.
-
-    The MP4 variant exists because a GIF can't be sent as an animation
-    through WhatsApp-style notifiers: WhatsApp's "GIFs" are short looping
-    MP4s, and integrations like Hornero choose image vs. video from the
-    camera's content type. A dashboard camera card renders an <img>, which
-    can't play MP4 — hence two entities instead of switching the format.
-    """
-
-    def __init__(
-        self,
-        coordinator: ArgentinaSMNDataUpdateCoordinator,
-        config_entry: ConfigEntry,
-        name: str,
-        kind: str,
-        label: str,
-        update_interval: int,
-        as_video: bool,
-    ) -> None:
-        variant = "video" if as_video else "animation"
-        super().__init__(
-            coordinator,
-            config_entry,
-            f"_{kind}_{variant}",
-            f"{name} {label} ({'video' if as_video else 'animado'})",
-            update_interval,
-            f"{kind}_{variant}",
-        )
-        self.content_type = "video/mp4" if as_video else "image/gif"
-        self._as_video = as_video
-        self._animation_key = f"{config_entry.entry_id}_{kind}"
-
-    async def _build_frames(self) -> list[Any] | None:
-        raise NotImplementedError
-
-    async def _build_image(self) -> bytes | None:
-        encoded = await _shared_animation(
-            self.hass,
-            self._animation_key,
-            self._build_frames,
-            max_age=self._update_interval - 120,
-        )
-        if not encoded:
-            return None
-        return encoded["mp4" if self._as_video else "gif"]
-
-
-class SMNSatelliteAnimationCamera(_SMNSatelliteAnimationBase):
-    """Animation of the local fixed-zoom satellite view (see SMNSatelliteCamera)."""
-
-    def __init__(
-        self,
-        coordinator: ArgentinaSMNDataUpdateCoordinator,
-        config_entry: ConfigEntry,
-        name: str,
-        latitude: float,
-        longitude: float,
-        force_infrared: bool = False,
-        as_video: bool = False,
-    ) -> None:
-        super().__init__(
-            coordinator,
-            config_entry,
-            name,
-            "satellite_infrared" if force_infrared else "satellite",
-            "Satélite Infrarrojo" if force_infrared else "Satélite",
-            SATELLITE_ANIMATION_UPDATE_INTERVAL,
-            as_video,
-        )
-        self._latitude = latitude
-        self._longitude = longitude
-        self._force_infrared = force_infrared
-
-    async def _build_frames(self) -> list[Any] | None:
-        data = self.coordinator.data
-        return await build_satellite_animation_frames(
-            async_get_clientsession(self.hass),
-            self._latitude,
-            self._longitude,
-            force_infrared=self._force_infrared,
-            current_weather=data.current_weather_data if data else None,
-        )
-
-
-class SMNSatelliteCountryAnimationCamera(_SMNSatelliteAnimationBase):
-    """Animation of the whole-Argentina view (see SMNSatelliteCountryCamera)."""
-
-    def __init__(
-        self,
-        coordinator: ArgentinaSMNDataUpdateCoordinator,
-        config_entry: ConfigEntry,
-        name: str,
-        latitude: float,
-        longitude: float,
-        force_infrared: bool = False,
-        as_video: bool = False,
     ) -> None:
         super().__init__(
             coordinator,
@@ -623,12 +350,10 @@ class SMNSatelliteCountryAnimationCamera(_SMNSatelliteAnimationBase):
             name,
             "satellite_country_infrared" if force_infrared else "satellite_country",
             "Satélite Argentina Infrarrojo" if force_infrared else "Satélite Argentina",
-            SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL,
-            as_video,
+            latitude,
+            longitude,
+            force_infrared,
         )
-        self._latitude = latitude
-        self._longitude = longitude
-        self._force_infrared = force_infrared
 
     async def _build_frames(self) -> list[Any] | None:
         data = self.coordinator.data
@@ -642,8 +367,14 @@ class SMNSatelliteCountryAnimationCamera(_SMNSatelliteAnimationBase):
         )
 
 
-class SMNSatelliteProvinceAnimationCamera(_SMNSatelliteAnimationBase):
-    """Animation of the configured location's province (see SMNSatelliteProvinceCamera)."""
+class SMNSatelliteProvinceCamera(_SMNSatelliteAnimationCamera):
+    """Animation of the configured location's province, with its departments.
+
+    The province is whatever SMN resolves for the configured location
+    (current_weather_data["province"]); until it's known and matches the
+    bundled outlines (boundaries.py), there's no image rather than a
+    fallback to the country view, which would be misleading under this name.
+    """
 
     def __init__(
         self,
@@ -653,7 +384,6 @@ class SMNSatelliteProvinceAnimationCamera(_SMNSatelliteAnimationBase):
         latitude: float,
         longitude: float,
         force_infrared: bool = False,
-        as_video: bool = False,
     ) -> None:
         super().__init__(
             coordinator,
@@ -661,12 +391,10 @@ class SMNSatelliteProvinceAnimationCamera(_SMNSatelliteAnimationBase):
             name,
             "satellite_province_infrared" if force_infrared else "satellite_province",
             "Satélite provincia Infrarrojo" if force_infrared else "Satélite provincia",
-            SATELLITE_REGION_ANIMATION_UPDATE_INTERVAL,
-            as_video,
+            latitude,
+            longitude,
+            force_infrared,
         )
-        self._latitude = latitude
-        self._longitude = longitude
-        self._force_infrared = force_infrared
 
     async def _build_frames(self) -> list[Any] | None:
         data = self.coordinator.data
@@ -684,3 +412,21 @@ class SMNSatelliteProvinceAnimationCamera(_SMNSatelliteAnimationBase):
             current_weather=current_weather,
             subdivisions=get_department_rings(province),
         )
+
+
+class SMNSatelliteVideoView(HomeAssistantView):
+    """Serves a satellite camera's animation as MP4, at its `video_url` attribute.
+
+    Requires Home Assistant authentication like any /api endpoint (a
+    long-lived token, or the Supervisor token for add-ons such as Hornero).
+    """
+
+    url = f"/api/{DOMAIN}/video/{{entity_id}}"
+    name = f"api:{DOMAIN}:video"
+    requires_auth = True
+
+    async def get(self, request: web.Request, entity_id: str) -> web.Response:
+        camera = request.app[KEY_HASS].data.get(_VIDEOS_KEY, {}).get(entity_id)
+        if camera is None or not camera.video:
+            return web.Response(status=404)
+        return web.Response(body=camera.video, content_type="video/mp4")

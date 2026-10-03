@@ -1,9 +1,9 @@
-"""Satellite imagery snapshot built from NASA GIBS' GOES-East tiles.
+"""Animated satellite views (whole country / one province) from NASA GIBS' GOES-East tiles.
 
-See const.py for why GIBS instead of NOAA STAR's own CDN. This mirrors
-radar.py's mosaic-building approach (same Web Mercator tile math, same
-concurrent-fetch pattern), just against a different tile source, and adds
-an optional "cloud motion" arrow estimated from two consecutive frames.
+Same Web Mercator tile math as radar.py, against GIBS' public WMTS tiles
+(see const.py for why GIBS). Each animation is rendered once and encoded as
+a GIF (what the camera entity shows) and an MP4 (what gets sent to chat
+apps — see encode_animation).
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from typing import Any
 import aiohttp
 import async_timeout
 
-from .boundaries import draw_region_overlay, get_bbox, get_country_rings
+from .boundaries import draw_region_overlay, get_bbox
 from .const import (
     GIBS_LAYER_GEOCOLOR,
     GIBS_LAYER_INFRARED,
@@ -28,11 +28,9 @@ from .const import (
     GIBS_TILE_URL_TEMPLATE,
     SATELLITE_ANIMATION_FRAMES,
     SATELLITE_ANIMATION_LOOKBACK_BUFFER,
-    SATELLITE_TILE_GRID,
     SATELLITE_TILE_SIZE,
-    SATELLITE_ZOOM,
 )
-from .radar import _deg2pixel, _deg2tile
+from .radar import _deg2pixel
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -177,167 +175,14 @@ def _tile_semaphore() -> asyncio.Semaphore:
     return _TILE_SEMAPHORE
 
 
-async def _fetch_mosaic(
-    session: aiohttp.ClientSession,
-    layer: str,
-    matrix_set: str,
-    when: datetime,
-    center_x: int,
-    center_y: int,
-) -> tuple[Any, bool]:
-    """Fetch and stitch a tile grid for one GIBS frame timestamp.
-
-    Returns (mosaic, complete) — `complete` is False if any tile in the
-    grid was missing, so callers can fall back to an earlier timestamp
-    instead of showing a mosaic with black holes in it.
-    """
-    from PIL import Image
-
-    half = SATELLITE_TILE_GRID // 2
-    mosaic = Image.new(
-        "RGBA",
-        (SATELLITE_TILE_SIZE * SATELLITE_TILE_GRID, SATELLITE_TILE_SIZE * SATELLITE_TILE_GRID),
-    )
-
-    time_str = when.strftime("%Y-%m-%dT%H:%M:%SZ")
-    positions = [(dx, dy) for dx in range(-half, half + 1) for dy in range(-half, half + 1)]
-    urls = [
-        GIBS_TILE_URL_TEMPLATE.format(
-            layer=layer,
-            time=time_str,
-            matrix_set=matrix_set,
-            z=SATELLITE_ZOOM,
-            x=center_x + dx,
-            y=center_y + dy,
-        )
-        for dx, dy in positions
-    ]
-    tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
-    complete = all(tile is not None for tile in tiles)
-    for (dx, dy), tile_img in zip(positions, tiles):
-        if tile_img is None:
-            tile_img = Image.new("RGBA", (SATELLITE_TILE_SIZE, SATELLITE_TILE_SIZE), (0, 0, 0, 0))
-        mosaic.paste(tile_img, ((dx + half) * SATELLITE_TILE_SIZE, (dy + half) * SATELLITE_TILE_SIZE))
-    return mosaic, complete
-
-
-async def _fetch_complete_mosaic(
-    session: aiohttp.ClientSession,
-    layer: str,
-    matrix_set: str,
-    start_time: datetime,
-    center_x: int,
-    center_y: int,
-    max_attempts: int = 4,
-):
-    """Fetch a mosaic at start_time, stepping back a frame at a time until complete.
-
-    Handles GIBS occasionally serving a partially-published timestamp (see
-    _fetch_mosaic). Falls back through up to `max_attempts` earlier 10-min
-    frames; if none come back complete, returns the last (incomplete) one
-    fetched rather than nothing, since a slightly stale/partial frame beats
-    an empty camera.
-    """
-    mosaic, complete, when = None, False, start_time
-    for i in range(max_attempts):
-        when = start_time - i * _FRAME_INTERVAL
-        mosaic, complete = await _fetch_mosaic(session, layer, matrix_set, when, center_x, center_y)
-        if complete:
-            return mosaic, when
-    _LOGGER.debug(
-        "No complete GIBS mosaic found for %s within %d attempts before %s, using partial frame",
-        layer, max_attempts, start_time,
-    )
-    return mosaic, when
-
-
-def _estimate_motion_vector(frame_a: Any, frame_b: Any) -> tuple[float, float] | None:
-    """Estimate the dominant pixel shift from frame_a to frame_b via phase correlation.
-
-    This is a coarse visual approximation of cloud-pattern displacement
-    between two mosaics of the same area (~10-20 min apart) — it reflects
-    what moved across the image, distorted by the Web Mercator projection,
-    not an actual measured wind vector. Good enough for "clouds are
-    drifting this way on the screen", not for anything quantitative.
-    """
-    try:
-        import numpy as np
-    except ImportError:
-        return None
-
-    gray_a = np.asarray(frame_a.convert("L"), dtype=np.float64)
-    gray_b = np.asarray(frame_b.convert("L"), dtype=np.float64)
-    if gray_a.shape != gray_b.shape:
-        return None
-
-    window = np.outer(np.hanning(gray_a.shape[0]), np.hanning(gray_a.shape[1]))
-    fa = np.fft.fft2(gray_a * window)
-    fb = np.fft.fft2(gray_b * window)
-    cross_power = fa * np.conj(fb)
-    magnitude = np.abs(cross_power)
-    magnitude[magnitude == 0] = 1e-10
-    cross_power /= magnitude
-    correlation = np.fft.ifft2(cross_power).real
-
-    peak_y, peak_x = np.unravel_index(np.argmax(correlation), correlation.shape)
-    height, width = correlation.shape
-    if peak_y > height // 2:
-        peak_y -= height
-    if peak_x > width // 2:
-        peak_x -= width
-
-    # A near-zero peak means no reliable dominant shift was found (e.g. a
-    # mostly featureless clear-sky frame) — better to draw nothing than a
-    # meaningless arrow.
-    if abs(peak_x) < 1 and abs(peak_y) < 1:
-        return None
-    return float(peak_x), float(peak_y)
-
-
-def _draw_motion_arrow(frame: Any, vector: tuple[float, float]) -> None:
-    """Draw an arrow near the bottom-right showing the estimated cloud drift."""
-    from PIL import ImageDraw
-    import math
-
-    dx, dy = vector
-    magnitude = math.hypot(dx, dy)
-    if magnitude == 0:
-        return
-    # Normalize to a fixed on-screen arrow length regardless of the raw
-    # pixel shift measured (which depends on the time gap between frames).
-    length = 40
-    ux, uy = dx / magnitude, dy / magnitude
-
-    margin = 60
-    cx, cy = frame.width - margin, frame.height - margin
-    x0, y0 = cx - ux * length / 2, cy - uy * length / 2
-    x1, y1 = cx + ux * length / 2, cy + uy * length / 2
-
-    draw = ImageDraw.Draw(frame, "RGBA")
-    draw.ellipse(
-        [cx - margin + 10, cy - margin + 10, cx + margin - 10, cy + margin - 10],
-        fill=(0, 0, 0, 110),
-    )
-    draw.line([(x0, y0), (x1, y1)], fill=(255, 220, 40, 255), width=4)
-    # Arrowhead.
-    head_size = 10
-    angle = math.atan2(uy, ux)
-    for side in (1, -1):
-        hx = x1 - head_size * math.cos(angle - side * math.pi / 6)
-        hy = y1 - head_size * math.sin(angle - side * math.pi / 6)
-        draw.line([(x1, y1), (hx, hy)], fill=(255, 220, 40, 255), width=4)
-
-
 # Argentina doesn't observe DST, so a fixed UTC-3 offset is always correct
 # (unlike using the host's local time, which may not even be Argentina's).
 _ARG_UTC_OFFSET = timedelta(hours=-3)
 _CAPTION_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DejaVuSans.ttf")
 
-# Reference width every overlay size below is tuned against: the local
-# fixed-zoom camera's frame (SATELLITE_TILE_GRID * SATELLITE_TILE_SIZE =
-# 3*256 = 768px). Region cameras render at a different output size, so
-# scaling every overlay by the frame's actual width keeps text/dots/swatches
-# a consistent *proportion* of the image across every camera.
+# Reference width every overlay size below is tuned against; overlays scale
+# with the frame's actual width so they keep the same proportion at any
+# output size.
 _REFERENCE_FRAME_WIDTH = 768
 
 
@@ -609,149 +454,6 @@ def _draw_location_pin(
     draw.text((label_x, label_y), label, font=font, fill=(255, 255, 255, 255))
 
 
-def _local_origin(center_x: int, center_y: int) -> tuple[float, float]:
-    """World-pixel origin (top-left) of the local fixed-zoom tile grid."""
-    half = SATELLITE_TILE_GRID // 2
-    return (center_x - half) * SATELLITE_TILE_SIZE, (center_y - half) * SATELLITE_TILE_SIZE
-
-
-def _draw_outline(frame: Any, center_x: int, center_y: int) -> None:
-    """Draw Argentina's national outline as a light location-context reference.
-
-    Always the country outline, not the configured province's: this camera
-    is zoomed in tight around one lat/lon with no zoom control, so a
-    province boundary would usually run off-frame or be unrecognizable at
-    this scale — see radar.py's build_radar_snapshot_jpeg for the same
-    reasoning. A province that's fully visible at its own natural zoom
-    belongs on build_region_snapshot_jpeg instead.
-
-    Uses radar.py's _deg2pixel — safe to share since SATELLITE_TILE_SIZE
-    equals RADAR_TILE_SIZE (both 256px), which is what that projection
-    hardcodes internally.
-    """
-    rings = get_country_rings()
-    if not rings:
-        return
-    half = SATELLITE_TILE_GRID // 2
-    origin_x = (center_x - half) * SATELLITE_TILE_SIZE
-    origin_y = (center_y - half) * SATELLITE_TILE_SIZE
-    draw_region_overlay(
-        frame, rings, lambda lat, lon: _deg2pixel(lat, lon, SATELLITE_ZOOM), origin_x, origin_y
-    )
-
-
-async def build_satellite_snapshot_jpeg(
-    session: aiohttp.ClientSession,
-    latitude: float,
-    longitude: float,
-    with_motion_arrow: bool = True,
-    force_infrared: bool = False,
-    current_weather: dict[str, Any] | None = None,
-) -> bytes | None:
-    """Build a single static JPEG: latest GIBS satellite frame for the area.
-
-    When `with_motion_arrow` is set, also fetches the previous frame (one
-    extra mosaic fetch) purely to estimate and draw a drift arrow — see
-    _estimate_motion_vector's docstring for what that vector does and
-    doesn't mean. `force_infrared` uses Band13 clean IR instead of
-    GeoColor (see _layer_for). `current_weather` (same
-    shape as coordinator.data's field) labels the location pin's
-    temperature, if given.
-    """
-    layer, matrix_set = _layer_for(force_infrared)
-    center_x, center_y = _deg2tile(latitude, longitude, SATELLITE_ZOOM)
-    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
-    if latest_time is None:
-        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
-        return None
-    latest, resolved_time = await _fetch_complete_mosaic(
-        session, layer, matrix_set, latest_time, center_x, center_y
-    )
-    frame = _smooth_if_infrared(latest, layer)
-
-    if with_motion_arrow:
-        previous, _ = await _fetch_complete_mosaic(
-            session, layer, matrix_set, resolved_time - _FRAME_INTERVAL, center_x, center_y
-        )
-        vector = _estimate_motion_vector(previous, latest)
-        if vector:
-            _draw_motion_arrow(frame, vector)
-
-    _draw_outline(frame, center_x, center_y)
-    _draw_location_pin(
-        frame,
-        latitude,
-        longitude,
-        SATELLITE_ZOOM,
-        *_local_origin(center_x, center_y),
-        current_weather,
-    )
-    if layer == GIBS_LAYER_INFRARED:
-        _draw_ir_legend(frame)
-    _draw_caption(frame, _format_frame_caption(resolved_time))
-
-    buffer = io.BytesIO()
-    frame.convert("RGB").save(buffer, format="JPEG", quality=85)
-    return buffer.getvalue()
-
-
-async def build_satellite_animation_frames(
-    session: aiohttp.ClientSession,
-    latitude: float,
-    longitude: float,
-    force_infrared: bool = False,
-    current_weather: dict[str, Any] | None = None,
-) -> list[Any] | None:
-    """Rendered frames (oldest first) of the last SATELLITE_ANIMATION_FRAMES GIBS frames.
-
-    Encode them with encode_animation(). Rendering runs in the executor so
-    Pillow's work doesn't block Home Assistant's event loop.
-    """
-    layer, matrix_set = _layer_for(force_infrared)
-    center_x, center_y = _deg2tile(latitude, longitude, SATELLITE_ZOOM)
-    latest_time = await _resolve_latest_frame_time(session, layer, matrix_set)
-    if latest_time is None:
-        _LOGGER.warning("No recent GIBS frame found for layer %s", layer)
-        return None
-    times = _recent_frame_times(
-        latest_time, SATELLITE_ANIMATION_FRAMES + SATELLITE_ANIMATION_LOOKBACK_BUFFER
-    )
-
-    results = await asyncio.gather(
-        *(_fetch_mosaic(session, layer, matrix_set, when, center_x, center_y) for when in times)
-    )
-    # A frame with any missing tile is dropped rather than shown with black
-    # holes in it — see _fetch_mosaic's docstring. More candidates than
-    # SATELLITE_ANIMATION_FRAMES were requested above so that dropping a few
-    # incomplete ones still leaves enough to reach the target count.
-    kept = [(mosaic, when) for (mosaic, complete), when in zip(results, times) if complete]
-    kept = kept[-SATELLITE_ANIMATION_FRAMES:]
-    if not kept:
-        return None
-
-    def render() -> list[Any]:
-        total = len(kept)
-        frames = []
-        for i, (mosaic, when) in enumerate(kept):
-            mosaic = _smooth_if_infrared(mosaic, layer)
-            _draw_outline(mosaic, center_x, center_y)
-            _draw_location_pin(
-                mosaic,
-                latitude,
-                longitude,
-                SATELLITE_ZOOM,
-                *_local_origin(center_x, center_y),
-                current_weather,
-            )
-            if layer == GIBS_LAYER_INFRARED:
-                _draw_ir_legend(mosaic)
-            _draw_caption(mosaic, _format_frame_caption(when), frame_index=i, total_frames=total)
-            frames.append(mosaic.convert("RGB"))
-        return frames
-
-    return await asyncio.get_running_loop().run_in_executor(None, render)
-
-
 # --- Region (country / province) cameras -----------------------------------
 #
 # Pipeline, in this order on purpose:
@@ -977,47 +679,6 @@ def _region_view_for(
     return _RegionView(rings, layer, matrix_set, _max_zoom_for(force_infrared))
 
 
-async def build_region_snapshot_jpeg(
-    session: aiohttp.ClientSession,
-    rings: list[list[tuple[float, float]]],
-    force_infrared: bool = False,
-    pin: tuple[float, float] | None = None,
-    current_weather: dict[str, Any] | None = None,
-    subdivisions: list[list[tuple[float, float]]] | None = None,
-) -> bytes | None:
-    """Static JPEG of a whole area (a province, or all of Argentina).
-
-    See the comment at the top of this section for the rendering pipeline.
-    `pin` is the configured location's (latitude, longitude), labeled with
-    `current_weather`'s temperature; `subdivisions` are internal borders
-    (departments for a province, provinces for the country).
-    """
-    if not rings:
-        return None
-    view = _region_view_for(rings, force_infrared)
-    latest_time = await _resolve_latest_frame_time(session, view.layer, view.matrix_set)
-    if latest_time is None:
-        _LOGGER.warning("No recent GIBS frame found for layer %s", view.layer)
-        return None
-
-    raster, when = None, latest_time
-    for i in range(4):
-        when = latest_time - i * _FRAME_INTERVAL
-        raster, complete = await _fetch_region_raster(session, view, when)
-        if complete:
-            break
-
-    def render() -> bytes:
-        frame = _render_region_frame(
-            raster, view, rings, subdivisions, pin, current_weather, _format_frame_caption(when)
-        )
-        buffer = io.BytesIO()
-        frame.save(buffer, format="JPEG", quality=90)
-        return buffer.getvalue()
-
-    return await asyncio.get_running_loop().run_in_executor(None, render)
-
-
 async def build_region_animation_frames(
     session: aiohttp.ClientSession,
     rings: list[list[tuple[float, float]]],
@@ -1028,7 +689,7 @@ async def build_region_animation_frames(
 ) -> list[Any] | None:
     """Rendered frames (oldest first) of the last SATELLITE_ANIMATION_FRAMES of a whole area.
 
-    Same rendering as build_region_snapshot_jpeg; encode with
+    See the comment at the top of this section for the rendering; encode with
     encode_animation(). More candidate timestamps than needed are fetched
     (SATELLITE_ANIMATION_LOOKBACK_BUFFER) so a few incomplete ones don't
     shrink the animation; the most recent complete ones are kept.

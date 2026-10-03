@@ -103,59 +103,17 @@
       "radar": {
         "name": "Radar"
       },
-      "satellite": {
-        "name": "Satélite"
-      },
-      "satellite_animation": {
-        "name": "Satélite (animado)"
-      },
       "satellite_country": {
-        "name": "Satélite (Argentina)"
-      },
-      "satellite_province": {
-        "name": "Satélite (provincia)"
-      },
-      "satellite_province_animation": {
-        "name": "Satélite provincia (animado)"
-      },
-      "satellite_infrared": {
-        "name": "Satélite (infrarrojo)"
+        "name": "Satélite Argentina"
       },
       "satellite_country_infrared": {
-        "name": "Satélite Argentina (infrarrojo)"
+        "name": "Satélite Argentina Infrarrojo"
       },
-      "satellite_country_animation": {
-        "name": "Satélite Argentina (animado)"
-      },
-      "satellite_country_infrared_animation": {
-        "name": "Satélite Argentina Infrarrojo (animado)"
+      "satellite_province": {
+        "name": "Satélite provincia"
       },
       "satellite_province_infrared": {
-        "name": "Satélite (provincia, infrarrojo)"
-      },
-      "satellite_province_infrared_animation": {
-        "name": "Satélite (provincia, infrarrojo, animado)"
-      },
-      "satellite_infrared_animation": {
-        "name": "Satélite (infrarrojo, animado)"
-      },
-      "satellite_video": {
-        "name": "Satélite (video)"
-      },
-      "satellite_province_video": {
-        "name": "Satélite provincia (video)"
-      },
-      "satellite_country_video": {
-        "name": "Satélite Argentina (video)"
-      },
-      "satellite_country_infrared_video": {
-        "name": "Satélite Argentina Infrarrojo (video)"
-      },
-      "satellite_province_infrared_video": {
-        "name": "Satélite (provincia, infrarrojo, video)"
-      },
-      "satellite_infrared_video": {
-        "name": "Satélite (infrarrojo, video)"
+        "name": "Satélite provincia Infrarrojo"
       }
     },
     "sensor": {
