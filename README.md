@@ -55,7 +55,8 @@ filtrar por el nombre del dispositivo o una palabra del nombre visible.
 | `weather` | (el nombre que le pusiste al configurar) | Clima actual + pronóstico de 7 días | 30 min |
 | `binary_sensor` | Alerta meteorológica | ¿Hay alguna alerta activa hoy, de cualquier tipo? | 30 min |
 | `binary_sensor` ×11 | Alerta por tormenta / lluvia / nieve / viento / viento zonda / altas y bajas temperaturas / niebla / polvo / humo / ceniza volcánica | Una por tipo de evento | 30 min |
-| `binary_sensor` | Alerta por granizo | ¿Hay un aviso vigente que mencione caída de granizo? | 10-30 min |
+| `binary_sensor` | Alerta por granizo | ¿Un aviso a corto plazo que cubre tu ubicación exacta menciona granizo? | 10 min |
+| `binary_sensor` | Granizo cercano | ¿Hay un aviso con granizo a menos de X km de tu ubicación? (radio configurable) | 10 min |
 | `binary_sensor` | Alerta a corto plazo | ¿Tu ubicación exacta está dentro de una zona de alerta activa ahora? | 10 min |
 | `sensor` | Pronóstico de corto plazo | Resumen en una frase de la situación de corto plazo | 10 min |
 | `sensor` | Avisos por provincia (país) | Avisos activos en todo el país, agrupados por provincia | 10 min |
@@ -68,6 +69,7 @@ filtrar por el nombre del dispositivo o una palabra del nombre visible.
 | `sensor` | Pronóstico de mañana | Condición, máxima y mínima de mañana | 30 min |
 | `sensor` | Próxima lluvia | Cuándo es el próximo período con probabilidad de lluvia relevante | 30 min |
 | `camera` | Radar | Foto del radar de precipitación, con clima actual y zonas de alerta | 10 min |
+| `camera` | Avisos Argentina | Mapa de todo el país con los polígonos de todos los avisos a corto plazo vigentes | 10 min |
 | `camera` | Satélite Argentina | Animación satelital de todo el país (últimos ~100 min) | 20 min |
 | `camera` | Satélite Argentina Infrarrojo | Igual, en infrarrojo | 20 min |
 | `camera` | Satélite provincia | Animación satelital de tu provincia (según la resuelve SMN) | 20 min |
@@ -86,10 +88,18 @@ tiene alerta activa hoy (amarilla/naranja/roja); `off` = sin alerta de ese
 tipo. "Alerta meteorológica" es el resumen: `on` si cualquiera de los 11
 está activo.
 
-### `binary_sensor` "Alerta por granizo"
+### `binary_sensor` "Alerta por granizo" y "Granizo cercano"
 
-Indica si algún aviso vigente menciona caída de granizo. Atributos:
-`match_count` y `matching_texts`, con el texto exacto que lo disparó.
+- **Alerta por granizo**: se enciende cuando un aviso a corto plazo que
+  cubre tu ubicación exacta menciona granizo. Atributos: `alerts` (título y
+  vigencia) y `zone_alert_mentions` (si la alerta por zona de tormenta de
+  hoy menciona granizo, como contexto).
+- **Granizo cercano**: busca entre los avisos de todo el país el más
+  cercano que mencione granizo y se enciende si está dentro del radio
+  configurado (50 km por defecto; se cambia en Ajustes → Dispositivos y
+  Servicios → SMN → Configurar). Atributos: `distance_km`, `direction`
+  (hacia dónde está el aviso), `title`, `end_date` y `radius_km`. Sirve
+  para enterarte antes de que la tormenta llegue a tu punto.
 
 ### `binary_sensor` "Alerta a corto plazo": ¿estoy en zona de peligro?
 
@@ -179,6 +189,12 @@ action:
 Foto con el radar de precipitación de tu zona (~300km alrededor),
 temperatura y pronóstico de las próximas horas, y cualquier zona de
 alerta activa cercana dibujada sobre el mapa.
+
+### `camera` "Avisos Argentina"
+
+Mapa de todo el país (OpenStreetMap) con las provincias y los polígonos de
+**todos** los avisos a corto plazo vigentes, tal como los publica el SMN,
+más un pin en tu ubicación. Abajo indica cuántos avisos hay vigentes.
 
 ### `camera` "Satélite Argentina" / "Satélite provincia" (y sus versiones infrarrojo)
 

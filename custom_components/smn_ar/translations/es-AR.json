@@ -115,6 +115,9 @@
       },
       "satellite_province_infrared": {
         "name": "Satélite provincia Infrarrojo"
+      },
+      "country_alerts": {
+        "name": "Avisos Argentina"
       }
     },
     "sensor": {

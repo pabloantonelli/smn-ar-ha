@@ -37,6 +37,7 @@ from .const import (
     SATELLITE_ANIMATION_UPDATE_INTERVAL,
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
+from .alerts_map import build_country_alerts_jpeg
 from .radar import build_radar_snapshot_jpeg
 from .satellite import build_region_animation_frames, encode_mp4
 
@@ -57,6 +58,7 @@ async def async_setup_entry(
 
     entities: list[Camera] = [
         SMNRadarCamera(coordinator, config_entry, name, latitude, longitude),
+        SMNCountryAlertsCamera(coordinator, config_entry, name, latitude, longitude),
     ]
     for force_infrared in (False, True):
         entities.append(
@@ -381,3 +383,76 @@ class SMNSatelliteProvinceCamera(_SMNSatelliteAnimationCamera):
             subdivisions=get_department_rings(province),
         )
 
+
+class SMNCountryAlertsCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
+    """Map of Argentina with every active short-term warning polygon (SMN's own geometry).
+
+    Static JPEG on an OpenStreetMap basemap, rebuilt in the background like
+    the radar camera. Uses the nationwide warning list, not the per-location
+    one, so it shows warnings anywhere in the country.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "country_alerts"
+    _attr_attribution = "Avisos: SMN · Mapa: © OpenStreetMap contributors"
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        name: str,
+        latitude: float,
+        longitude: float,
+    ) -> None:
+        super().__init__(coordinator)
+        Camera.__init__(self)
+        self.content_type = "image/jpeg"
+        self._attr_unique_id = f"{config_entry.entry_id}_country_alerts"
+        self._attr_name = f"{name} Avisos Argentina"
+        self._config_entry = config_entry
+        self._pin = (latitude, longitude)
+        self._image: bytes | None = None
+        self._refreshing = False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.hass.async_create_task(self._async_refresh())
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass, self._async_refresh, timedelta(seconds=RADAR_UPDATE_INTERVAL)
+            )
+        )
+
+    async def _async_refresh(self, _now=None) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            data = self.coordinator.data
+            image = await build_country_alerts_jpeg(
+                async_get_clientsession(self.hass),
+                data.nationwide_shortterm_alerts if data else [],
+                self._pin,
+            )
+            if image:
+                self._image = image
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Error building country alerts map: %s", err, exc_info=True)
+        finally:
+            self._refreshing = False
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        if self._image is None and not self._refreshing:
+            await self._async_refresh()
+        return self._image

@@ -287,6 +287,7 @@ def draw_region_overlay(
     darken_alpha: int = 130,
     subdivision_rings: list[list[tuple[float, float]]] | None = None,
     scale: float | None = None,
+    subdivision_color: tuple[int, int, int, int] | None = None,
 ) -> None:
     """Darken everything outside `rings` (a spotlight effect), then draw the outline.
 
@@ -318,5 +319,13 @@ def draw_region_overlay(
     frame.alpha_composite(overlay)
 
     if subdivision_rings:
-        draw_subdivision_lines(frame, subdivision_rings, deg2pixel, origin_x, origin_y, scale=scale)
+        draw_subdivision_lines(
+            frame,
+            subdivision_rings,
+            deg2pixel,
+            origin_x,
+            origin_y,
+            **({"color": subdivision_color} if subdivision_color else {}),
+            scale=scale,
+        )
     draw_province_outline(frame, rings, deg2pixel, origin_x, origin_y, scale=scale)

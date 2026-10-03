@@ -115,6 +115,9 @@
       },
       "satellite_province_infrared": {
         "name": "Satellite province Infrared"
+      },
+      "country_alerts": {
+        "name": "Warnings Argentina"
       }
     },
     "sensor": {
