@@ -214,6 +214,21 @@ intermedios para que el movimiento sea fluido):
 En todas, un pin marca tu ubicación con la temperatura actual, y una línea
 de tiempo abajo indica qué tan viejo es cada cuadro.
 
+La imagen de la cámara es el cuadro más reciente: las tarjetas de cámara de
+Home Assistant la muestran en una imagen, y solo Safari reproduce video ahí.
+La animación es un video MP4 en loop, al que apunta el `entity_picture` de
+la entidad. Para verla en el dashboard desde cualquier navegador, la
+integración trae una tarjeta propia (no hace falta instalar nada aparte):
+
+```yaml
+type: custom:smn-ar-video-card
+entity: camera.smn_satelite_argentina
+# name: Satélite     # opcional
+# autoplay: false    # opcional: muestra la imagen fija y reproduce al tocarla
+```
+
+Se reproduce sola, en loop y sin sonido; tocándola se pausa o se reanuda.
+
 ## Créditos
 
 Basado en el trabajo de [`catastrophicode/ha-ar-smn`](https://github.com/catastrophicode/ha-ar-smn)

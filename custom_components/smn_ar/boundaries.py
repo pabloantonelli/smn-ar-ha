@@ -154,6 +154,16 @@ def get_department_rings(province_name: str) -> list[list[tuple[float, float]]] 
     return _load_departments().get(_normalize(province_name))
 
 
+def preload_boundaries() -> None:
+    """Read both bundled GeoJSON files into their caches.
+
+    Blocking file I/O: call it from an executor job before anything on the
+    event loop uses the getters above, so they only ever hit the cache.
+    """
+    _load_provinces()
+    _load_departments()
+
+
 def get_bbox(rings: list[list[tuple[float, float]]]) -> tuple[float, float, float, float]:
     """Return (min_lat, min_lon, max_lat, max_lon) covering all of `rings`."""
     lats = [lat for ring in rings for _, lat in ring]

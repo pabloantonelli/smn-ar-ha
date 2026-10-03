@@ -2,7 +2,8 @@
 
 Same Web Mercator tile math as radar.py, against GIBS' public WMTS tiles
 (see const.py for why GIBS). Each animation is rendered once and encoded as
-a short looping MP4 (see encode_mp4).
+a short looping MP4 (see encode_mp4), plus a JPEG of the latest frame
+for the camera image (see encode_still_jpeg).
 """
 from __future__ import annotations
 
@@ -710,6 +711,17 @@ async def build_region_animation_frames(
 _VIDEO_FPS = 12
 _VIDEO_INBETWEENS = 5
 _VIDEO_HOLD_LAST_SECONDS = 1.5
+
+
+def encode_still_jpeg(frames: list[Any]) -> bytes:
+    """JPEG of the most recent frame: the camera image the dashboard shows.
+
+    A dashboard renders the camera image in an <img>, which only Safari can
+    play an MP4 in, so the animation goes out separately (see encode_mp4).
+    """
+    buffer = io.BytesIO()
+    frames[-1].convert("RGB").save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
 
 
 def encode_mp4(frames: list[Any]) -> bytes | None:
