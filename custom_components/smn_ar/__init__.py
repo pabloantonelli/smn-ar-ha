@@ -7,9 +7,11 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, Platform
+from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
+from homeassistant.util import slugify
 
 from .const import ALERT_EVENT_MAP, ALERT_LEVEL_MAP, API_ALERT_PATH, DOMAIN
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
@@ -106,8 +108,35 @@ def _parse_alerts(alerts_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fix_duplicated_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Rename `camera.cordoba_cordoba_radar` -> `camera.cordoba_radar` (and `weather.cordoba_cordoba`).
+
+    Up to v1.6.1 the cameras and the weather entity put the location name in
+    their own name on top of has_entity_name, which already prefixes the
+    device's name, so their entity_ids got it twice. Only ids still in that
+    exact generated form are touched (not ones the user renamed), and only
+    when the target id is free.
+    """
+    slug = slugify(entry.data.get(CONF_NAME, "SMN Weather"))
+    doubled = f"{slug}_{slug}"
+    registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if reg_entry.domain not in ("camera", "weather"):
+            continue
+        object_id = reg_entry.entity_id.split(".", 1)[1]
+        if object_id != doubled and not object_id.startswith(f"{doubled}_"):
+            continue
+        new_entity_id = f"{reg_entry.domain}.{object_id[len(slug) + 1:]}"
+        if registry.async_get(new_entity_id):
+            continue
+        _LOGGER.info("Renaming %s to %s", reg_entry.entity_id, new_entity_id)
+        registry.async_update_entity(reg_entry.entity_id, new_entity_id=new_entity_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SMN from a config entry."""
+    _fix_duplicated_entity_ids(hass, entry)
+
     # Create coordinator
     coordinator = ArgentinaSMNDataUpdateCoordinator(hass, entry)
 

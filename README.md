@@ -218,16 +218,30 @@ La imagen de la cámara es el cuadro más reciente: las tarjetas de cámara de
 Home Assistant la muestran en una imagen, y solo Safari reproduce video ahí.
 La animación es un video MP4 en loop, al que apunta el `entity_picture` de
 la entidad. Para verla en el dashboard desde cualquier navegador, la
-integración trae una tarjeta propia (no hace falta instalar nada aparte):
+integración trae una tarjeta propia (no hace falta instalar nada aparte).
+También sirve para el radar y el mapa de avisos, que muestra como imagen.
+
+Se agrega desde el editor del dashboard: **Agregar tarjeta → SMN Mapa /
+Satélite**, y se configura de forma visual (la cámara se elige de una lista
+con solo las de SMN). En YAML, todas las opciones son opcionales salvo
+`entity`:
 
 ```yaml
 type: custom:smn-ar-video-card
-entity: camera.smn_satelite_argentina
-# name: Satélite     # opcional
-# autoplay: false    # opcional: muestra la imagen fija y reproduce al tocarla
+entity: camera.cordoba_satelite_provincia_infrarrojo
+name: Satélite            # por defecto, el nombre de la entidad
+name_position: below      # below (debajo) | overlay (sobre la imagen) | hidden
+aspect_ratio: auto        # auto | 16:9 | 4:3 | 1:1 | 3:4
+fit: cover                # cover (llena, recorta bordes) | contain (sin recortar)
+tap_action: play_pause    # play_pause | more_info | fullscreen | none
+autoplay: true            # false: imagen fija hasta tocarla
+playback_rate: 1          # 0.5 | 0.75 | 1 | 1.5 | 2
+show_controls: false      # controles de video del navegador
+show_updated: true        # hora de la última actualización de la animación
 ```
 
-Se reproduce sola, en loop y sin sonido; tocándola se pausa o se reanuda.
+El video se reproduce en loop y sin sonido, y se actualiza solo cuando se
+regenera la animación.
 
 ## Créditos
 

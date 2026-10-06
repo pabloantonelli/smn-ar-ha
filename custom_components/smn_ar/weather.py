@@ -105,7 +105,8 @@ class ArgentinaSMNWeather(
         """Initialize the weather entity."""
         super().__init__(coordinator)
         self._config_entry = config_entry
-        self._attr_name = config_entry.data.get(CONF_NAME, "SMN Weather")
+        # The device's main entity: named just like the device (has_entity_name).
+        self._attr_name = None
         self._attr_unique_id = f"{config_entry.entry_id}"
 
     @property
@@ -113,7 +114,7 @@ class ArgentinaSMNWeather(
         """Return device information."""
         return DeviceInfo(
             identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._attr_name,
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
             manufacturer="Servicio Meteorológico Nacional",
             entry_type=DeviceEntryType.SERVICE,
         )

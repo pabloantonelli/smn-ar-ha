@@ -161,7 +161,6 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
         # instead of an instance one after super().__init__().
         self.content_type = "image/jpeg"
         self._attr_unique_id = f"{config_entry.entry_id}_radar"
-        self._attr_name = f"{name} Radar"
         self._latitude = latitude
         self._longitude = longitude
         self._cached_image: bytes | None = None
@@ -271,7 +270,6 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
         config_entry: ConfigEntry,
         name: str,
         kind: str,
-        label: str,
         latitude: float,
         longitude: float,
         force_infrared: bool,
@@ -281,7 +279,6 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
         self.content_type = "image/jpeg"
         self._attr_translation_key = kind
         self._attr_unique_id = f"{config_entry.entry_id}_{kind}"
-        self._attr_name = f"{name} {label}"
         self._config_entry = config_entry
         self._latitude = latitude
         self._longitude = longitude
@@ -410,7 +407,6 @@ class SMNSatelliteCountryCamera(_SMNSatelliteAnimationCamera):
             config_entry,
             name,
             "satellite_country_infrared" if force_infrared else "satellite_country",
-            "Satélite Argentina Infrarrojo" if force_infrared else "Satélite Argentina",
             latitude,
             longitude,
             force_infrared,
@@ -451,7 +447,6 @@ class SMNSatelliteProvinceCamera(_SMNSatelliteAnimationCamera):
             config_entry,
             name,
             "satellite_province_infrared" if force_infrared else "satellite_province",
-            "Satélite provincia Infrarrojo" if force_infrared else "Satélite provincia",
             latitude,
             longitude,
             force_infrared,
@@ -499,7 +494,6 @@ class SMNCountryAlertsCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator
         Camera.__init__(self)
         self.content_type = "image/jpeg"
         self._attr_unique_id = f"{config_entry.entry_id}_country_alerts"
-        self._attr_name = f"{name} Avisos Argentina"
         self._config_entry = config_entry
         self._pin = (latitude, longitude)
         self._image: bytes | None = None
