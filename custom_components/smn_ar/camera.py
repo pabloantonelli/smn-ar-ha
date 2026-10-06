@@ -50,7 +50,7 @@ from .const import (
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .alerts_map import build_country_alerts_jpeg
 from .radar import build_radar_snapshot_jpeg
-from .satellite import build_region_animation_frames, encode_mp4, encode_still_jpeg
+from .satellite import build_region_animation_frames, encode_gif, encode_mp4
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -249,11 +249,11 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
 
 
 class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
-    """Animated satellite view: a JPEG still as the camera image, plus an MP4.
+    """Animated satellite view: a GIF as the camera image, plus an MP4.
 
     Dashboards render the camera image in an <img>, which only Safari can
-    play an MP4 in, so the image is the latest frame and the looping MP4 is
-    what `entity_picture` points to (SMNSatelliteVideoView). Notifiers that
+    play an MP4 in, so the image is a GIF and the smoother, lighter looping
+    MP4 is what `entity_picture` points to (SMNSatelliteVideoView). Notifiers that
     send whatever `entity_picture` serves get the video, and the bundled
     smn-ar-video-card (frontend/) plays it in a loop on the dashboard.
 
@@ -276,7 +276,7 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
     ) -> None:
         super().__init__(coordinator)
         Camera.__init__(self)
-        self.content_type = "image/jpeg"
+        self.content_type = "image/gif"
         self._attr_translation_key = kind
         self._attr_unique_id = f"{config_entry.entry_id}_{kind}"
         self._config_entry = config_entry
@@ -337,7 +337,7 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
         try:
             frames = await self._build_frames()
             if frames:
-                self._image = await self.hass.async_add_executor_job(encode_still_jpeg, frames)
+                self._image = await self.hass.async_add_executor_job(encode_gif, frames)
                 video = await self.hass.async_add_executor_job(encode_mp4, frames)
                 if video:
                     self.video = video

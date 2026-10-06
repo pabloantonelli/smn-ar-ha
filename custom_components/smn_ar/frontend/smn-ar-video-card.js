@@ -1,7 +1,7 @@
 // Card for SMN's cameras. Satellite cameras play the looping MP4 their
-// entity_picture points to (a camera image is rendered in an <img>, which
-// only Safari can play an MP4 in); the rest (radar, alerts map) show their
-// still image. Configurable from the visual editor.
+// entity_picture points to (smoother than their GIF camera image); the rest
+// (radar, alerts map) show their camera image. Configurable from the visual
+// editor.
 //
 //   type: custom:smn-ar-video-card
 //   entity: camera.cordoba_satelite_provincia_infrarrojo
@@ -277,7 +277,7 @@ class SmnArVideoCard extends HTMLElement {
       this._config.name_position === "hidden" && !this._updated.textContent,
     );
 
-    // The still: the satellite's latest frame until the video plays, or the
+    // The camera image: the satellite's GIF until the video loads, or the
     // whole image for the other cameras. Its URL changes with each state
     // write (new image, or the access token rotating), so it stays fresh.
     const token = new URL(picture, location.origin).searchParams.get("token");
@@ -299,6 +299,12 @@ class SmnArVideoCard extends HTMLElement {
     this._videoSrc = picture;
     if (this._playing && (!this._video.getAttribute("src") || version !== this._version)) {
       this._start();
+    } else if (!this._playing && !this._video.getAttribute("src")) {
+      // Paused from the start (autoplay off): show the video's first frame,
+      // not the GIF, which would animate anyway.
+      this._video.preload = "auto";
+      this._video.src = this._videoSrc;
+      this._media.classList.add("has-video");
     }
     this._version = version;
     this._media.classList.toggle("paused", !this._playing);

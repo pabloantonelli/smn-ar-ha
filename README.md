@@ -214,12 +214,13 @@ intermedios para que el movimiento sea fluido):
 En todas, un pin marca tu ubicación con la temperatura actual, y una línea
 de tiempo abajo indica qué tan viejo es cada cuadro.
 
-La imagen de la cámara es el cuadro más reciente: las tarjetas de cámara de
-Home Assistant la muestran en una imagen, y solo Safari reproduce video ahí.
-La animación es un video MP4 en loop, al que apunta el `entity_picture` de
-la entidad. Para verla en el dashboard desde cualquier navegador, la
-integración trae una tarjeta propia (no hace falta instalar nada aparte).
-También sirve para el radar y el mapa de avisos, que muestra como imagen.
+La imagen de la cámara es un GIF animado, así que se ve animada en
+cualquier tarjeta de cámara de Home Assistant y en cualquier navegador.
+Además, el `entity_picture` de la entidad apunta a la misma animación como
+video MP4 en loop: más fluido (con cuadros intermedios) y más liviano, ideal
+para mandar por chat. Para ver el video en el dashboard, la integración trae
+una tarjeta propia (no hace falta instalar nada aparte), que también sirve
+para el radar y el mapa de avisos.
 
 Se agrega desde el editor del dashboard: **Agregar tarjeta → SMN Mapa /
 Satélite**, y se configura de forma visual (la cámara se elige de una lista

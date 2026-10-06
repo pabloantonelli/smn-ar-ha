@@ -2,8 +2,8 @@
 
 Same Web Mercator tile math as radar.py, against GIBS' public WMTS tiles
 (see const.py for why GIBS). Each animation is rendered once and encoded as
-a short looping MP4 (see encode_mp4), plus a JPEG of the latest frame
-for the camera image (see encode_still_jpeg).
+a short looping MP4 (see encode_mp4), plus a GIF of the same frames for
+the camera image (see encode_gif).
 """
 from __future__ import annotations
 
@@ -713,14 +713,39 @@ _VIDEO_INBETWEENS = 5
 _VIDEO_HOLD_LAST_SECONDS = 1.5
 
 
-def encode_still_jpeg(frames: list[Any]) -> bytes:
-    """JPEG of the most recent frame: the camera image the dashboard shows.
+def encode_gif(frames: list[Any], frame_ms: int = 450, hold_last_ms: int = 1500) -> bytes:
+    """Looping GIF of `frames`: the camera image the dashboard shows.
 
-    A dashboard renders the camera image in an <img>, which only Safari can
-    play an MP4 in, so the animation goes out separately (see encode_mp4).
+    A dashboard renders the camera image in an <img>, which animates a GIF
+    in every browser but plays an MP4 only in Safari (the MP4 goes out
+    separately, see encode_mp4). Only the real frames, without encode_mp4's
+    in-betweens: every GIF frame costs almost a full frame of file size.
+    The whole loop stays well under the ~10 s a camera card waits before
+    reloading the image, so it's always seen through to the latest frame,
+    which is held longer.
+
+    No dithering: Pillow's default RGB->palette conversion dithers, which
+    turns thin antialiased lines and text into speckled noise once
+    quantized to 256 colors.
     """
+    from PIL import Image
+
+    try:
+        no_dither = Image.Dither.NONE
+    except AttributeError:  # Pillow < 9.1
+        no_dither = Image.NONE
+    paletted = [f.quantize(colors=256, dither=no_dither) for f in frames]
+    durations = [frame_ms] * (len(paletted) - 1) + [hold_last_ms]
     buffer = io.BytesIO()
-    frames[-1].convert("RGB").save(buffer, format="JPEG", quality=90)
+    paletted[0].save(
+        buffer,
+        format="GIF",
+        save_all=True,
+        append_images=paletted[1:],
+        duration=durations,
+        loop=0,
+        disposal=1,
+    )
     return buffer.getvalue()
 
 
