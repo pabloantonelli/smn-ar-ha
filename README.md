@@ -1,9 +1,11 @@
 # SMN Argentina para Home Assistant
 
 Lleva el clima oficial del [Servicio Meteorológico Nacional](https://www.smn.gob.ar)
-a Home Assistant: clima actual y pronóstico de 7 días, alertas tempranas
-por tipo de evento, avisos a muy corto plazo con precisión de punto exacto
-(no por zona aproximada), y cámaras con radar de precipitación e imágenes
+a Home Assistant: clima actual y pronóstico de 7 días, alertas de
+tormenta, lluvia, viento, granizo y más que se encienden sólo si el
+fenómeno está cerca de tu ubicación (radio configurable, medido sobre los
+polígonos de los avisos del SMN), alertas de tu zona según la franja del
+día, cuándo viene la próxima lluvia o tormenta, y cámaras con radar de precipitación e imágenes
 satelitales reales — en color, infrarrojo, fijas o animadas, de tu zona,
 tu provincia o todo el país — todo con datos oficiales, no de un
 agregador de terceros.
