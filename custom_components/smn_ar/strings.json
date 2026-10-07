@@ -23,9 +23,9 @@
     "step": {
       "init": {
         "title": "SMN options",
-        "description": "Distance around your location within which a short-term warning that mentions hail turns on the \"Nearby hail\" sensor.",
+        "description": "Distance around your location within which an SMN short-term warning turns on the storm, rain, wind, snow, zonda wind and hail alerts, and the short-term alert. The high/low temperature, fog, dust, smoke and volcanic ash alerts, and the weather alert, are SMN zone forecasts (for the current period of the day) and don't use this radius. \"Next rain or storm\" also uses it for nearby warnings.",
         "data": {
-          "hail_radius_km": "Nearby hail radius (km)"
+          "alert_radius_km": "Nearby alerts radius (km)"
         }
       }
     }
@@ -95,9 +95,6 @@
       },
       "hail_alert": {
         "name": "Hail alert"
-      },
-      "nearby_hail": {
-        "name": "Nearby hail"
       }
     },
     "camera": {
@@ -149,7 +146,7 @@
         "name": "Tomorrow's forecast"
       },
       "next_rain": {
-        "name": "Next rain"
+        "name": "Next rain or storm"
       }
     }
   }

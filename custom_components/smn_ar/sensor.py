@@ -17,7 +17,10 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.weather import ATTR_CONDITION_LIGHTNING_RAINY
 from homeassistant.const import (
+    CONF_LATITUDE,
+    CONF_LONGITUDE,
     CONF_NAME,
     PERCENTAGE,
     UnitOfSpeed,
@@ -28,8 +31,16 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .alert_levels import (
+    active_events_now,
+    alert_periods,
+    aviso_matches,
+    get_alert_radius_km,
+    ranked_avisos,
+)
 from .const import (
     ALERT_EVENT_MAP,
+    ALERT_EVENT_NEARBY_KEYWORDS,
     ALERT_LEVEL_MAP,
     DOMAIN,
     NEXT_RAIN_PROBABILITY_THRESHOLD,
@@ -59,31 +70,109 @@ def _parse_period_datetime(date_str: str | None, time_str: str | None) -> dateti
     return naive.replace(tzinfo=_ARG_TZ)
 
 
-def find_next_rain(
-    hourly_forecast: list[dict[str, Any]],
-    threshold: int = NEXT_RAIN_PROBABILITY_THRESHOLD,
-) -> dict[str, Any] | None:
-    """Return the next upcoming forecast period with a meaningful rain chance.
+_RAIN_EVENT_ID = 37  # ALERT_EVENT_MAP[37] == "lluvia"
+_STORM_EVENT_ID = 41  # ALERT_EVENT_MAP[41] == "tormenta"
+_STORM_KEYWORDS = ALERT_EVENT_NEARBY_KEYWORDS["tormenta"]
+_RAIN_OR_STORM_KEYWORDS = (
+    ALERT_EVENT_NEARBY_KEYWORDS["tormenta"][0] + ALERT_EVENT_NEARBY_KEYWORDS["lluvia"][0],
+    (),
+)
+# Source strength, used to break ties within the same period.
+_SOURCE_AVISO = (3, "aviso cercano")
+_SOURCE_ALERT = (2, "alerta de zona")
+_SOURCE_FORECAST = (1, "pronóstico")
 
-    SMN's "hourly" forecast is actually 4 coarse periods/day (early
-    morning/morning/afternoon/night), not truly hourly — so this is "next
-    period with rain likely", not a precise time of day. Returns the
-    earliest future period whose `rain_prob_range` max reaches `threshold`
-    (%), or None if nothing in the forecast horizon qualifies.
+
+def _parse_iso(value: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+
+
+def find_next_rain_or_storm(
+    hourly_forecast: list[dict[str, Any]],
+    alerts: dict[str, Any] | None,
+    avisos: list[dict[str, Any]] | None,
+    latitude: float,
+    longitude: float,
+    radius_km: float,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(next rain or storm, next storm) combining SMN's three sources.
+
+    Candidates, each with `when`, `tipo` ("lluvia"/"tormenta") and `fuente`:
+    - a rain/storm aviso a muy corto plazo within the radius (happening now
+      nearby; `when` is when it was issued),
+    - a rain/storm alert for the location's zone, per period (today and the
+      next couple of days),
+    - the location's forecast periods with rain likely (NEXT_RAIN_PROBABILITY
+      _THRESHOLD) or a storm condition, even with a low rain probability.
+    The earliest wins; anything already under way counts as "now", and ties
+    go to the stronger source (aviso > zone alert > forecast).
     """
-    now = datetime.now(_ARG_TZ)
-    best: tuple[datetime, dict[str, Any]] | None = None
+    now = now or datetime.now(_ARG_TZ)
+    candidates: list[dict[str, Any]] = []
+
+    for distance, bearing, aviso in ranked_avisos(latitude, longitude, avisos, _RAIN_OR_STORM_KEYWORDS):
+        if distance > radius_km:
+            continue
+        candidates.append(
+            {
+                "when": _parse_iso(aviso.get("date")) or now,
+                "tipo": "tormenta" if aviso_matches(aviso, _STORM_KEYWORDS) else "lluvia",
+                "source": _SOURCE_AVISO,
+                "distance_km": round(distance, 1),
+                "direction": None if distance == 0 else wind_cardinal(bearing),
+                "title": (aviso.get("title") or "").strip(),
+                "end_date": aviso.get("end_date"),
+            }
+        )
+
+    for event_id, tipo in ((_STORM_EVENT_ID, "tormenta"), (_RAIN_EVENT_ID, "lluvia")):
+        for start, level in alert_periods(alerts, event_id, now):
+            candidates.append(
+                {
+                    "when": start,
+                    "tipo": tipo,
+                    "source": _SOURCE_ALERT,
+                    "level": level,
+                    "level_name": ALERT_LEVEL_MAP.get(level, ALERT_LEVEL_MAP[1])["name"],
+                }
+            )
+
+    forecast_by_time: dict[datetime, dict[str, Any]] = {}
     for period in hourly_forecast:
         when = _parse_period_datetime(period.get("date"), period.get("time"))
-        if when is None or when < now:
+        if when is None:
             continue
         rain_prob_range = period.get("rain_prob_range")
         probability = max(rain_prob_range) if rain_prob_range else None
-        if probability is None or probability < threshold:
+        condition = format_condition(period.get("weather"))
+        forecast_by_time[when] = {"probability": probability, "condition": condition}
+        if when < now:
             continue
-        if best is None or when < best[0]:
-            best = (when, {**period, "_when": when, "_probability": probability})
-    return best[1] if best else None
+        storm = condition == ATTR_CONDITION_LIGHTNING_RAINY
+        if not storm and (probability is None or probability < NEXT_RAIN_PROBABILITY_THRESHOLD):
+            continue
+        candidates.append(
+            {"when": when, "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST}
+        )
+
+    def sort_key(candidate: dict[str, Any]) -> tuple[datetime, int, int]:
+        return (
+            max(candidate["when"], now),
+            -candidate["source"][0],
+            0 if candidate["tipo"] == "tormenta" else 1,
+        )
+
+    candidates.sort(key=sort_key)
+    for candidate in candidates:
+        # Rain probability/condition the forecast gives for the same period.
+        candidate.update(forecast_by_time.get(candidate["when"], {}))
+    next_any = candidates[0] if candidates else None
+    next_storm = next((c for c in candidates if c["tipo"] == "tormenta"), None)
+    return next_any, next_storm
 
 
 def _format_time(iso_str: str | None) -> str | None:
@@ -97,25 +186,16 @@ def _format_time(iso_str: str | None) -> str | None:
 
 
 def _active_event_alerts(alerts: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return today's active alert events (max_level > 1), most severe first."""
-    warnings = alerts.get("warnings") if isinstance(alerts, dict) else None
-    if not warnings:
-        return []
-
-    today = warnings[0]
-    events = today.get("events", [])
+    """Return the zone's alert events in the current period (level > 1), most severe first."""
     active = []
-    for event in events:
-        max_level = event.get("max_level", 1)
-        if max_level <= 1:
-            continue
-        event_id = event.get("id")
-        event_name = ALERT_EVENT_MAP.get(event_id, f"evento_{event_id}")
-        level_info = ALERT_LEVEL_MAP.get(max_level, {"name": "alerta"})
+    for event in active_events_now(alerts if isinstance(alerts, dict) else None):
+        event_id = event["event_id"]
+        level = event["level"]
+        level_info = ALERT_LEVEL_MAP.get(level, {"name": "alerta"})
         active.append(
             {
-                "event": event_name,
-                "level": max_level,
+                "event": ALERT_EVENT_MAP.get(event_id, f"evento_{event_id}"),
+                "level": level,
                 "level_name": level_info["name"],
             }
         )
@@ -167,11 +247,12 @@ def build_summary(
             attrs["instrucciones"] = first["instructions"]
         return state[:MAX_STATE_LENGTH], attrs
 
-    # 2. Alertas por evento (tormenta, lluvia, viento, etc.) para hoy.
+    # 2. Alertas por evento (tormenta, lluvia, viento, etc.) de la zona,
+    # en la franja actual del día.
     active_events = _active_event_alerts(alerts)
     if active_events:
         parts = [f"{a['event'].replace('_', ' ')} ({a['level_name']})" for a in active_events]
-        state = "Alerta de " + ", ".join(parts) + " para hoy"
+        state = "Alerta de " + ", ".join(parts) + " para tu zona"
         attrs["alertas_activas"] = active_events
         return state[:MAX_STATE_LENGTH], attrs
 
@@ -448,15 +529,14 @@ class SMNTomorrowForecastSensor(_SMNDailyForecastSensor):
 
 
 class SMNNextRainSensor(_SMNSensorBase):
-    """When the next period with a meaningful rain chance is expected.
+    """Próxima lluvia o tormenta: when the next rain or storm is expected.
 
-    State is a timestamp (device_class TIMESTAMP), so a dashboard shows it
-    as "en 3 horas" automatically and it's directly usable in automation
-    triggers/conditions (e.g. "fires N minutes before this timestamp").
-    `None` means nothing in SMN's forecast horizon currently reaches
-    NEXT_RAIN_PROBABILITY_THRESHOLD — not necessarily "no rain ever", just
-    nothing forecast yet; see `probability`/`rain_expected` in the
-    attributes to tell "no rain forecast" apart from "data not loaded yet".
+    Combines a nearby aviso, the zone's rain/storm alerts by period and the
+    location's forecast (see find_next_rain_or_storm). State is a timestamp
+    (device_class TIMESTAMP), so a dashboard shows it as "en 3 horas" and
+    it's directly usable in automation triggers/conditions. `tipo` tells
+    rain and storm apart; `proxima_tormenta` keeps the next storm even when
+    rain comes first. `None` means nothing is forecast in SMN's horizon.
     """
 
     _attr_translation_key = "next_rain"
@@ -467,24 +547,60 @@ class SMNNextRainSensor(_SMNSensorBase):
         super().__init__(coordinator, config_entry, "_next_rain")
 
     @property
-    def _next_rain(self) -> dict[str, Any] | None:
-        return find_next_rain(self.coordinator.data.hourly_forecast)
+    def _radius_km(self) -> float:
+        return get_alert_radius_km(self._config_entry)
+
+    def _find(self) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        data = self.coordinator.data
+        return find_next_rain_or_storm(
+            data.hourly_forecast,
+            data.alerts,
+            data.nationwide_shortterm_alerts,
+            self._config_entry.data[CONF_LATITUDE],
+            self._config_entry.data[CONF_LONGITUDE],
+            self._radius_km,
+        )
 
     @property
     def native_value(self) -> datetime | None:
-        next_rain = self._next_rain
-        return next_rain["_when"] if next_rain else None
+        next_any, _ = self._find()
+        return next_any["when"] if next_any else None
+
+    @property
+    def icon(self) -> str:
+        next_any, _ = self._find()
+        return "mdi:weather-lightning-rainy" if next_any and next_any["tipo"] == "tormenta" else "mdi:weather-pouring"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        next_rain = self._next_rain
-        if not next_rain:
-            return {"rain_expected": False}
-        return {
-            "rain_expected": True,
-            "probability": next_rain["_probability"],
-            "condition": format_condition(next_rain.get("weather")),
+        next_any, next_storm = self._find()
+        attrs: dict[str, Any] = {
+            "criterio": (
+                "Lo más próximo entre: un aviso a corto plazo de lluvia o tormenta a menos de "
+                f"{self._radius_km:g} km, una alerta de lluvia o tormenta para tu zona y el "
+                f"pronóstico de tu localidad (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% "
+                "o más de probabilidad, o tormenta)"
+            ),
+            "rain_expected": next_any is not None,
+            "proxima_tormenta": next_storm["when"].isoformat() if next_storm else None,
         }
+        if next_any is None:
+            return attrs
+        attrs.update(
+            {
+                "tipo": next_any["tipo"],
+                "fuente": next_any["source"][1],
+                # Already under way (a current aviso or period): the state is
+                # when it started, so it reads "hace X" on a dashboard.
+                "en_curso": next_any["when"] <= datetime.now(_ARG_TZ),
+                "probability": next_any.get("probability"),
+                "condition": next_any.get("condition"),
+            }
+        )
+        for key in ("level", "level_name", "distance_km", "direction", "title", "end_date"):
+            if key in next_any:
+                attrs[key] = next_any[key]
+        return attrs
 
 
 class SMNShortTermSummarySensor(

@@ -16,10 +16,10 @@ from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
 
+from .alert_levels import get_alert_radius_km
 from .const import (
-    CONF_HAIL_RADIUS_KM,
+    CONF_ALERT_RADIUS_KM,
     CONF_PROXY_URL,
-    DEFAULT_HAIL_RADIUS_KM,
     DEFAULT_HOME_LATITUDE,
     DEFAULT_HOME_LONGITUDE,
     DEFAULT_PROXY_URL,
@@ -197,7 +197,7 @@ class ArgentinaSMNConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class ArgentinaSMNOptionsFlow(OptionsFlow):
-    """Options: radius for the "Granizo cercano" sensor."""
+    """Options: radius for the proximity-based alerts (storm, rain, wind, snow, zonda, hail, short-term)."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         # Not `self.config_entry`: HA sets that itself since 2024.11 and
@@ -207,12 +207,12 @@ class ArgentinaSMNOptionsFlow(OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
             return self.async_create_entry(data=user_input)
-        current = self._entry.options.get(CONF_HAIL_RADIUS_KM, DEFAULT_HAIL_RADIUS_KM)
+        current = int(get_alert_radius_km(self._entry))
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_HAIL_RADIUS_KM, default=current): vol.All(
+                    vol.Required(CONF_ALERT_RADIUS_KM, default=current): vol.All(
                         vol.Coerce(int), vol.Range(min=5, max=500)
                     ),
                 }

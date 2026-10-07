@@ -53,11 +53,11 @@ filtrar por el nombre del dispositivo o una palabra del nombre visible.
 | Plataforma | Nombre visible | Qué es | Actualiza cada |
 |---|---|---|---|
 | `weather` | (el nombre que le pusiste al configurar) | Clima actual + pronóstico de 7 días | 30 min |
-| `binary_sensor` | Alerta meteorológica | ¿Hay alguna alerta activa hoy, de cualquier tipo? | 30 min |
-| `binary_sensor` ×11 | Alerta por tormenta / lluvia / nieve / viento / viento zonda / altas y bajas temperaturas / niebla / polvo / humo / ceniza volcánica | Una por tipo de evento | 30 min |
-| `binary_sensor` | Alerta por granizo | ¿Un aviso a corto plazo que cubre tu ubicación exacta menciona granizo? | 10 min |
-| `binary_sensor` | Granizo cercano | ¿Hay un aviso con granizo a menos de X km de tu ubicación? (radio configurable) | 10 min |
-| `binary_sensor` | Alerta a corto plazo | ¿Tu ubicación exacta está dentro de una zona de alerta activa ahora? | 10 min |
+| `binary_sensor` | Alerta por tormenta / lluvia / viento / nevada / viento zonda | **Por cercanía**: hay un aviso a corto plazo de ese tipo a menos del radio configurado | 10 min |
+| `binary_sensor` | Alerta por granizo | **Por cercanía**: hay un aviso a corto plazo que menciona granizo a menos del radio | 10 min |
+| `binary_sensor` | Alerta a corto plazo | **Por cercanía**: hay cualquier aviso a corto plazo a menos del radio | 10 min |
+| `binary_sensor` | Alerta por altas / bajas temperaturas / niebla / polvo / humo / ceniza volcánica | **Por zona**: el SMN tiene esa alerta para tu zona en la franja actual del día | 30 min |
+| `binary_sensor` | Alerta meteorológica | **Anticipo por zona**: el SMN tiene alguna alerta para tu zona en la franja actual del día | 30 min |
 | `sensor` | Pronóstico de corto plazo | Resumen en una frase de la situación de corto plazo | 10 min |
 | `sensor` | Avisos por provincia (país) | Avisos activos en todo el país, agrupados por provincia | 10 min |
 | `sensor` | Temperatura | Temperatura actual | 30 min |
@@ -67,7 +67,7 @@ filtrar por el nombre del dispositivo o una palabra del nombre visible.
 | `sensor` | Dirección del viento | Dirección del viento actual (punto cardinal) | 30 min |
 | `sensor` | Pronóstico de hoy | Condición, máxima y mínima de hoy | 30 min |
 | `sensor` | Pronóstico de mañana | Condición, máxima y mínima de mañana | 30 min |
-| `sensor` | Próxima lluvia | Cuándo es el próximo período con probabilidad de lluvia relevante | 30 min |
+| `sensor` | Próxima lluvia o tormenta | Cuándo es la próxima lluvia o tormenta, combinando avisos cercanos, alertas de tu zona y el pronóstico | 30 min |
 | `camera` | Radar | Foto del radar de precipitación, con clima actual y zonas de alerta | 10 min |
 | `camera` | Avisos Argentina | Mapa de todo el país con los polígonos de todos los avisos a corto plazo vigentes | 10 min |
 | `camera` | Satélite Argentina | Animación satelital de todo el país (últimos ~100 min) | 20 min |
@@ -81,45 +81,73 @@ La entidad de clima estándar de HA: temperatura, sensación térmica,
 humedad, presión, viento, visibilidad, y un pronóstico de 7 días con
 detalle por franja horaria (madrugada/mañana/tarde/noche).
 
-### `binary_sensor` "Alerta por `<evento>`" (los 11 sensores por tipo)
+### Alertas (`binary_sensor`): por cercanía o por zona
 
-Uno por cada tipo de alerta temprana del SMN. `on` = ese tipo de evento
-tiene alerta activa hoy (amarilla/naranja/roja); `off` = sin alerta de ese
-tipo. "Alerta meteorológica" es el resumen: `on` si cualquiera de los 11
-está activo.
+El SMN publica dos tipos de información de alerta, y cada entidad usa la
+más precisa que existe para su fenómeno. Todas tienen el atributo
+`criterio`, que explica en una frase qué la enciende.
 
-### `binary_sensor` "Alerta por granizo" y "Granizo cercano"
+**Radio de alertas cercanas**: es uno solo para todas las alertas por
+cercanía (30 km por defecto). Se cambia en Ajustes → Dispositivos y
+Servicios → SMN → Configurar.
 
-- **Alerta por granizo**: se enciende cuando un aviso a corto plazo que
-  cubre tu ubicación exacta menciona granizo. Atributos: `alerts` (título y
-  vigencia) y `zone_alert_mentions` (si la alerta por zona de tormenta de
-  hoy menciona granizo, como contexto).
-- **Granizo cercano**: busca entre los avisos de todo el país el más
-  cercano que mencione granizo y se enciende si está dentro del radio
-  configurado (50 km por defecto; se cambia en Ajustes → Dispositivos y
-  Servicios → SMN → Configurar). Atributos: `distance_km`, `direction`
-  (hacia dónde está el aviso), `title`, `end_date` y `radius_km`. Sirve
-  para enterarte antes de que la tormenta llegue a tu punto.
+#### Por cercanía: tormenta, lluvia, viento, nevada, viento zonda, granizo y "Alerta a corto plazo"
 
-### `binary_sensor` "Alerta a corto plazo": ¿estoy en zona de peligro?
+Usan los **avisos a muy corto plazo** de todo el país (validez de 1 a 2 h).
+Cada aviso trae el polígono del SMN, así que se puede medir la distancia
+real desde tu ubicación (0 km = estás adentro). La entidad se enciende si
+el aviso más cercano de ese tipo está dentro del radio.
 
-La respuesta directa a "¿mi ubicación está dentro de algún polígono de
-alerta ahora mismo?" (no una zona cercana, tu punto exacto).
+- El tipo sale del título del aviso. Por ejemplo, "TORMENTAS FUERTES CON
+  LLUVIAS INTENSAS, RÁFAGAS Y GRANIZO" enciende tormenta, lluvia, viento y
+  granizo. "Viento" no incluye los avisos de viento zonda, que tienen su
+  propia entidad.
+- "Alerta a corto plazo" se enciende con cualquier aviso dentro del radio.
+  Sus atributos traen `alert_count` y `alerts`, con el detalle de cada aviso
+  dentro del radio (distancia, dirección, vigencia, zonas e `instructions`).
+- Atributos: `distance_km` y `direction` (hacia dónde está el aviso),
+  `title`, `end_date`, `zones` y `radius_km`. Se muestran aunque el aviso
+  esté fuera del radio, para que veas qué tan lejos está.
+- Tormenta, lluvia, viento, nevada y zonda también traen, como contexto, el
+  pronóstico de tu zona para ese evento: `zone_level_now`,
+  `zone_max_level_today` y `zone_levels` (por franja). Ese pronóstico **no**
+  las enciende, porque una zona del SMN puede medir cientos de km.
+- "Alerta por granizo" trae además `zone_alert_mentions`: si el texto de la
+  alerta de tormenta de tu zona menciona granizo.
 
-- `on`: tu ubicación está dentro de al menos un aviso vigente de corto
-  plazo (validez 1-2h).
-- `off`: no lo está, aunque haya avisos activos en otras zonas (para eso
-  está "Avisos por provincia (país)").
+> "Granizo cercano" se fusionó en "Alerta por granizo", que ahora funciona
+> por cercanía. La entidad vieja se borra sola al actualizar. Si tenías
+> configurado su radio, se sigue usando hasta que guardes uno nuevo.
 
-Atributos cuando está `on`: `alert_count`, y `alerts` con el detalle
-completo (título, vigencia, zonas, severidad, e `instructions` con las
-medidas de protección recomendadas).
+#### Por zona: temperaturas, niebla, polvo, humo, ceniza volcánica y "Alerta meteorológica"
+
+El SMN no publica polígonos para estos fenómenos: sólo hay un pronóstico
+de alertas para la **zona** del SMN a la que pertenece tu ubicación (un
+departamento o un grupo de departamentos). Ese pronóstico trae un nivel por
+**franja del día**: madrugada (0 a 6 h), mañana (6 a 12 h), tarde (12 a
+18 h) y noche (18 a 24 h). La entidad se enciende sólo durante las franjas
+con alerta (amarilla, naranja o roja) y cambia de estado al empezar cada
+franja.
+
+- Atributos: `level`, `level_name`, `color` y `severity` de la franja
+  actual, `period`, `max_level_today`, `levels` (todas las franjas de hoy),
+  `description` e `instruction`.
+- **Alerta meteorológica** es el resumen y el **anticipo**: se enciende si
+  tu zona tiene alguna alerta, de cualquier tipo (también tormenta o
+  lluvia), en la franja actual. Se emite horas antes de que lleguen los
+  avisos a corto plazo, pero no mide distancia. Atributos: `active_alerts`
+  (las de la franja actual) y `today_alerts` (todo lo pronosticado para
+  hoy, con sus franjas).
+- El texto de `description` es genérico del SMN para ese nivel de alerta y
+  puede mencionar otras regiones del país. Por ejemplo: "En cambio en el
+  norte del Litoral…".
 
 ### `sensor` "Pronóstico de corto plazo"
 
 Resume en una frase la situación de corto plazo para tu ubicación, con
-esta prioridad: aviso de corto plazo vigente (tormenta, granizo, etc.) →
-alerta por evento activa hoy → alerta de ola de calor/frío → resumen del
+esta prioridad: aviso de corto plazo vigente sobre tu ubicación (tormenta,
+granizo, etc.) → alerta de tu zona en la franja actual → alerta de ola de
+calor/frío → resumen del
 pronóstico de hoy si no hay nada de lo anterior. El detalle completo de
 cada caso queda en los atributos (`instrucciones`, `avisos_corto_plazo`,
 `alertas_activas`, según corresponda).
@@ -138,13 +166,40 @@ simple de automatización, o exponerlos a Alexa/Google como sensor suelto.
 La dirección del viento también trae el valor exacto en grados en el
 atributo `degrees`.
 
-### `sensor` "Próxima lluvia"
+### `sensor` "Próxima lluvia o tormenta"
 
-Cuándo es el próximo período del pronóstico con probabilidad de lluvia
-relevante (30% o más). El estado es un horario (Home Assistant lo muestra
-como "en 3 horas"), y los atributos traen `rain_expected`, `probability`
-y `condition`. Si no hay nada así de probable en el pronóstico disponible,
-el estado queda vacío.
+Cuándo es la próxima lluvia o tormenta. El estado es un horario (Home
+Assistant lo muestra como "en 3 horas") y queda vacío si no hay nada
+pronosticado. Combina tres fuentes del SMN y se queda con la más próxima:
+
+1. **Aviso cercano**: un aviso a corto plazo de lluvia o tormenta dentro
+   del radio de alertas cercanas. Ya está ocurriendo cerca.
+2. **Alerta de zona**: una alerta de lluvia o tormenta para tu zona, por
+   franja del día (hoy y los próximos días).
+3. **Pronóstico** de tu localidad: una franja con 30% o más de
+   probabilidad de lluvia, o con condición de tormenta aunque la
+   probabilidad sea baja.
+
+Si dos fuentes coinciden en la misma franja, gana la más fuerte (aviso,
+después alerta, después pronóstico). Por ejemplo, en vez de "lluvia 40%"
+muestra "tormenta, alerta naranja".
+
+Atributos:
+
+- `tipo`: `lluvia` o `tormenta`. Sirve para que una automatización
+  reaccione sólo a tormentas.
+- `fuente`: `aviso cercano`, `alerta de zona` o `pronóstico`.
+- `en_curso`: `true` si ya empezó (un aviso o una franja vigente). En ese
+  caso el estado es el horario de inicio y se ve como "hace X".
+- `proxima_tormenta`: el horario de la próxima tormenta, aunque antes
+  venga lluvia.
+- `probability` y `condition` del pronóstico para esa franja.
+- `level` y `level_name`, si viene de una alerta.
+- `distance_km`, `direction`, `title` y `end_date`, si viene de un aviso.
+- `rain_expected` y `criterio`.
+
+> Antes se llamaba "Próxima lluvia" y sólo usaba el pronóstico. Es la
+> misma entidad, con el mismo `entity_id`.
 
 ### Evento `smn_ar_shortterm_alert_changed`
 

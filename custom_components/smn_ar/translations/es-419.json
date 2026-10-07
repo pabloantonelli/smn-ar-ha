@@ -23,9 +23,9 @@
     "step": {
       "init": {
         "title": "Opciones de SMN",
-        "description": "Distancia alrededor de tu ubicación dentro de la cual un aviso a corto plazo que menciona granizo enciende el sensor \"Granizo cercano\".",
+        "description": "Distancia alrededor de tu ubicación dentro de la cual un aviso a corto plazo del SMN enciende las alertas por tormenta, lluvia, viento, nevada, viento zonda y granizo, y la alerta a corto plazo. Las alertas por altas y bajas temperaturas, niebla, polvo, humo y ceniza volcánica, y la alerta meteorológica, son por zona del SMN (en la franja del día vigente) y no usan este radio. También lo usa \"Próxima lluvia o tormenta\" para los avisos cercanos.",
         "data": {
-          "hail_radius_km": "Radio de granizo cercano (km)"
+          "alert_radius_km": "Radio de alertas cercanas (km)"
         }
       }
     }
@@ -95,9 +95,6 @@
       },
       "hail_alert": {
         "name": "Alerta por granizo"
-      },
-      "nearby_hail": {
-        "name": "Granizo cercano"
       }
     },
     "camera": {
@@ -149,7 +146,7 @@
         "name": "Pronóstico de mañana"
       },
       "next_rain": {
-        "name": "Próxima lluvia"
+        "name": "Próxima lluvia o tormenta"
       }
     }
   }

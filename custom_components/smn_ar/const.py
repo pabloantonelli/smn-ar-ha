@@ -31,9 +31,12 @@ EVENT_SHORTTERM_ALERT_CHANGED: Final = f"{DOMAIN}_shortterm_alert_changed"
 # Config keys
 CONF_PROXY_URL: Final = "proxy_url"
 CONF_LOCATION_ID: Final = "location_id"
-# Options: radius around the configured location for "Granizo cercano".
+# Options: radius around the configured location within which a short-term
+# warning (aviso a muy corto plazo) turns on the proximity-based alerts.
+CONF_ALERT_RADIUS_KM: Final = "alert_radius_km"
+DEFAULT_ALERT_RADIUS_KM: Final = 30
+# Older option (only "Granizo cercano" used it), still honored as a fallback.
 CONF_HAIL_RADIUS_KM: Final = "hail_radius_km"
-DEFAULT_HAIL_RADIUS_KM: Final = 50
 
 # Default local address of the "smn-proxy" HA add-on (see addons/smn_proxy).
 # The add-on solves SMN's Cloudflare challenge and forwards requests to ws1
@@ -263,6 +266,38 @@ ALERT_EVENT_ICONS: Final = {
     "polvo": "mdi:weather-dust",
     "viento_zonda": "mdi:weather-windy-variant",
     "humo": "mdi:smoke",
+}
+
+# Alert types SMN also issues as avisos a muy corto plazo, which come with a
+# polygon: these alerts turn on by distance to the nearest matching aviso
+# instead of by the zone-wide forecast. Each maps to (keywords any of which
+# must appear in the aviso title, keywords that exclude it) — titles are
+# matched upper-cased and without accents, e.g. "TORMENTAS FUERTES CON
+# LLUVIAS INTENSAS, RAFAGAS Y OCASIONAL CAIDA DE GRANIZO." matches storm,
+# rain, wind and hail. The remaining event types (temperatures, fog, dust,
+# smoke, volcanic ash) only exist as zone forecasts.
+ALERT_EVENT_NEARBY_KEYWORDS: Final = {
+    "tormenta": (("TORMENTA",), ()),
+    "lluvia": (("LLUVIA",), ()),
+    "viento": (("RAFAGA", "VIENTO"), ("ZONDA",)),
+    "nevada": (("NEVADA", "NIEVE"), ()),
+    "viento_zonda": (("ZONDA",), ()),
+}
+HAIL_NEARBY_KEYWORDS: Final = (("GRANIZO",), ())
+
+# Human-readable names (Spanish) used in the "criterio" attribute.
+ALERT_EVENT_LABELS_ES: Final = {
+    "lluvia": "lluvia",
+    "viento": "viento",
+    "niebla": "niebla",
+    "tormenta": "tormenta",
+    "nevada": "nevada",
+    "altas_temperaturas": "altas temperaturas",
+    "bajas_temperaturas": "bajas temperaturas",
+    "ceniza_volcanica": "ceniza volcánica",
+    "polvo": "polvo",
+    "viento_zonda": "viento zonda",
+    "humo": "humo",
 }
 
 WIND_CARDINAL_DIRECTIONS: Final = [

@@ -240,7 +240,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload so sensors pick up changed options (e.g. the hail radius)."""
+    """Reload so sensors pick up changed options (e.g. the alert radius)."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
