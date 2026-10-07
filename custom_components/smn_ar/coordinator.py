@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import timedelta
 import logging
 import math
+import time
 from typing import Any
 
 import aiohttp
@@ -31,6 +32,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_SHORTTERM_ALERT_CHANGED,
+    SHORTTERM_SCAN_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -94,6 +96,7 @@ class ArgentinaSMNData:
         self.heat_warnings: dict[str, Any] = {}
         self.cold_warnings: dict[str, Any] = {}
         self.sun: dict[str, Any] = {}
+        self._last_full_fetch: float | None = None
 
     @property
     def location_id(self) -> str | None:
@@ -144,7 +147,12 @@ class ArgentinaSMNData:
         return self._location_id
 
     async def fetch_data(self) -> None:
-        """Fetch all SMN data through the proxy."""
+        """Fetch SMN data through the proxy.
+
+        Called every SHORTTERM_SCAN_INTERVAL: the avisos a muy corto plazo
+        (valid 1-2h) are fetched every time, everything else only once
+        DEFAULT_SCAN_INTERVAL has passed, matching SMN's own cadence for it.
+        """
         try:
             location_id = await self._get_location_id()
         except UpdateFailed:
@@ -152,10 +160,15 @@ class ArgentinaSMNData:
         except Exception as err:  # noqa: BLE001
             raise UpdateFailed(f"Error resolving location: {err}") from err
 
-        await self._fetch_current_weather(location_id)
-        await self._fetch_forecast(location_id)
-        await self._fetch_sun(location_id)
-        await self._fetch_alerts(location_id)
+        now = time.monotonic()
+        # A minute of slack: polls land at ~10-min steps, and the third one
+        # must count as "30 min elapsed" even if it fires slightly early.
+        if self._last_full_fetch is None or now - self._last_full_fetch >= DEFAULT_SCAN_INTERVAL - 60:
+            await self._fetch_current_weather(location_id)
+            await self._fetch_forecast(location_id)
+            await self._fetch_sun(location_id)
+            await self._fetch_alerts(location_id)
+            self._last_full_fetch = now
         await self._fetch_shortterm_alerts(location_id)
         await self._fetch_nationwide_shortterm_alerts()
 
@@ -362,7 +375,7 @@ class ArgentinaSMNDataUpdateCoordinator(DataUpdateCoordinator[ArgentinaSMNData])
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            update_interval=timedelta(seconds=SHORTTERM_SCAN_INTERVAL),
         )
 
     async def _async_update_data(self) -> ArgentinaSMNData:

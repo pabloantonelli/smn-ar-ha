@@ -41,7 +41,9 @@ Cloudflare/SMN para eso. Ver el README del repo raíz.
 ## Configuración (`config.yaml` options)
 
 - `cache_ttl_minutes` (default 15): cuánto se cachean las respuestas antes
-  de volver a pedirlas al origin.
+  de volver a pedirlas al origin. Los avisos a muy corto plazo
+  (`warning/shortterm`) se cachean como máximo 2 minutos, porque duran 1 a
+  2 h y la integración los consulta cada 10 minutos.
 - `token_refresh_minutes` (default 20): cada cuánto se relanza el browser
   para renovar la sesión.
 - `log_level`: nivel de logging del proxy.

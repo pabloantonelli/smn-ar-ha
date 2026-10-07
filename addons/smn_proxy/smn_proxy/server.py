@@ -38,6 +38,10 @@ log = logging.getLogger("smn_proxy")
 PORT = int(os.getenv("PORT", "6942"))
 CACHE_DIR = os.getenv("CACHE_DIR", "cache")
 CACHE_TTL = timedelta(minutes=int(os.getenv("CACHE_TTL_MINUTES", "15")))
+# Avisos a muy corto plazo last 1-2h and the integration polls them every
+# 10 min, so they get a much shorter cache than the rest of the API.
+SHORTTERM_CACHE_TTL = min(CACHE_TTL, timedelta(minutes=2))
+SHORTTERM_PATH_PREFIX = "warning/shortterm"
 TOKEN_REFRESH_SECONDS = int(os.getenv("TOKEN_REFRESH_MINUTES", "20")) * 60
 
 UPSTREAM_API = "https://ws1.smn.gob.ar/v1"
@@ -75,13 +79,13 @@ def _cache_path(url: str) -> str:
     return os.path.join(CACHE_DIR, f"{digest}.bin")
 
 
-def _load_cache(url: str) -> tuple[bytes, str] | None:
+def _load_cache(url: str, ttl: timedelta = CACHE_TTL) -> tuple[bytes, str] | None:
     path = _cache_path(url)
     meta_path = path + ".ctype"
     if not os.path.exists(path) or not os.path.exists(meta_path):
         return None
     age = time.time() - os.path.getmtime(path)
-    if age > CACHE_TTL.total_seconds():
+    if age > ttl.total_seconds():
         return None
     with open(path, "rb") as f:
         data = f.read()
@@ -109,7 +113,8 @@ def proxy_api(subpath: str):
     if request.query_string:
         url += "?" + request.query_string.decode("utf-8")
 
-    cached = _load_cache(url)
+    ttl = SHORTTERM_CACHE_TTL if subpath.startswith(SHORTTERM_PATH_PREFIX) else CACHE_TTL
+    cached = _load_cache(url, ttl)
     if cached:
         data, content_type = cached
         return Response(data, content_type=content_type)

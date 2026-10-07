@@ -1,5 +1,5 @@
 name: "SMN Proxy"
-version: "0.1.0"
+version: "0.2.0"
 slug: "smn_proxy"
 description: >-
   Resuelve el challenge de Cloudflare de smn.gob.ar con un navegador headless,
