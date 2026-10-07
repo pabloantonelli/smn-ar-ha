@@ -316,8 +316,8 @@ def _draw_forecast_panel(
     frame: Any,
     current_weather: dict[str, Any] | None,
     hourly_forecast: list[dict[str, Any]] | None,
-) -> None:
-    """Draw a top banner with current temp/condition and the next few periods.
+) -> int:
+    """Draw a top banner with current temp/condition and the next few periods; return its height.
 
     current_weather / hourly_forecast are coordinator.data's own fields
     (already fetched for the weather entity and sensors) — this just
@@ -327,7 +327,7 @@ def _draw_forecast_panel(
     from PIL import ImageDraw, ImageFont
 
     if not current_weather and not hourly_forecast:
-        return
+        return 0
 
     try:
         font_big = ImageFont.truetype(_FONT_PATH, size=22)
@@ -381,7 +381,7 @@ def _draw_forecast_panel(
         lines.append("  ·  ".join(forecast_parts))
 
     if not lines:
-        return
+        return 0
 
     draw = ImageDraw.Draw(frame, "RGBA")
     padding = 8
@@ -395,6 +395,43 @@ def _draw_forecast_panel(
         font = font_big if i == 0 else font_small
         draw.text((padding, y), line, font=font, fill=(255, 255, 255, 255))
         y += line_height_big if i == 0 else line_height_small
+    return banner_height
+
+
+# Sampled from GIBS' Band13 palette, coldest last (see satellite.py).
+_CLOUD_TOPS_LEGEND_COLORS = [(60, 210, 90), (235, 220, 40), (235, 50, 40)]
+
+
+def _draw_cloud_tops_legend(frame: Any, top: int) -> None:
+    """Small key in the top-right corner, just under the forecast banner.
+
+    The cold cloud tops layer is satellite data, not precipitation: without
+    a label it would read as more radar.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    try:
+        font = ImageFont.truetype(_FONT_PATH, size=15)
+    except OSError:
+        font = ImageFont.load_default()
+
+    label = "Nubes de tormenta (satélite)"
+    draw = ImageDraw.Draw(frame, "RGBA")
+    padding, swatch, gap = 8, 14, 8
+    text_width = draw.textlength(label, font=font)
+    box_width = len(_CLOUD_TOPS_LEGEND_COLORS) * swatch + gap + text_width + 2 * padding
+    box_height = swatch + 2 * padding
+    x0, y0 = frame.width - box_width, top
+    draw.rectangle([(x0, y0), (frame.width, y0 + box_height)], fill=(0, 0, 0, 170))
+    for i, color in enumerate(_CLOUD_TOPS_LEGEND_COLORS):
+        sx = x0 + padding + i * swatch
+        draw.rectangle([(sx, y0 + padding), (sx + swatch, y0 + padding + swatch)], fill=color)
+    draw.text(
+        (x0 + padding + len(_CLOUD_TOPS_LEGEND_COLORS) * swatch + gap, y0 + padding - 2),
+        label,
+        font=font,
+        fill=(255, 255, 255, 255),
+    )
 
 
 async def _fetch_frame_paths(session: aiohttp.ClientSession) -> tuple[str, list[str]]:
@@ -578,11 +615,32 @@ async def build_radar_snapshot_jpeg(
 
     center_x, center_y = _deg2tile(latitude, longitude, RADAR_ZOOM)
 
-    basemap = await _fetch_basemap_mosaic(session, center_x, center_y)
+    # Imported here: satellite.py imports this module's tile math.
+    from .satellite import fetch_cold_cloud_tops_layer
+
+    half = RADAR_TILE_GRID // 2
+    size = RADAR_TILE_SIZE * RADAR_TILE_GRID
+    basemap, cloud_tops, layer = await asyncio.gather(
+        _fetch_basemap_mosaic(session, center_x, center_y),
+        fetch_cold_cloud_tops_layer(
+            session,
+            (center_x - half) * RADAR_TILE_SIZE,
+            (center_y - half) * RADAR_TILE_SIZE,
+            size,
+            RADAR_ZOOM,
+        ),
+        _fetch_radar_layer(session, host, frame_paths[-1], center_x, center_y)
+        if host and frame_paths
+        else asyncio.sleep(0),
+    )
 
     frame = basemap.copy()
-    if host and frame_paths:
-        layer = await _fetch_radar_layer(session, host, frame_paths[-1], center_x, center_y)
+    # Cloud tops under the radar: where both show, the radar's actual
+    # precipitation is the more precise of the two.
+    has_cloud_tops = cloud_tops is not None and cloud_tops.getchannel("A").getbbox() is not None
+    if has_cloud_tops:
+        frame.alpha_composite(cloud_tops)
+    if layer is not None:
         frame.alpha_composite(layer)
 
     # Always the national outline here, not the province's: this camera is
@@ -607,7 +665,9 @@ async def build_radar_snapshot_jpeg(
         _draw_alert_caption(frame, visible_alerts)
 
     _draw_location_pin(frame, latitude, longitude, center_x, center_y)
-    _draw_forecast_panel(frame, current_weather, hourly_forecast)
+    panel_height = _draw_forecast_panel(frame, current_weather, hourly_forecast)
+    if has_cloud_tops:
+        _draw_cloud_tops_legend(frame, panel_height)
 
     buffer = io.BytesIO()
     frame.convert("RGB").save(buffer, format="JPEG", quality=85)

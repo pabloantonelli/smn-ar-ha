@@ -30,7 +30,7 @@ from .const import (
     SATELLITE_ANIMATION_LOOKBACK_BUFFER,
     SATELLITE_TILE_SIZE,
 )
-from .radar import _deg2pixel
+from .radar import _deg2pixel, _fetch_tile as _fetch_tile_unqueued
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -648,6 +648,96 @@ def _region_view_for(
 ) -> _RegionView:
     layer, matrix_set = _layer_for(force_infrared)
     return _RegionView(rings, layer, matrix_set, _max_zoom_for(force_infrared))
+
+
+# Cold cloud tops layer for the radar camera: Band13's pre-colored palette
+# is gray for clear sky / warm low clouds and colored for cold (convective)
+# tops, so color saturation tells them apart. Gray stays transparent;
+# colored fades in between these saturations, up to this opacity.
+_COLD_TOPS_MIN_SATURATION = 60
+_COLD_TOPS_FULL_SATURATION = 140
+_COLD_TOPS_OPACITY = 0.5
+_COLD_TOPS_BLUR_RADIUS = 6
+_COLD_TOPS_MAX_FRAMES_BACK = 3
+
+
+async def fetch_cold_cloud_tops_layer(
+    session: aiohttp.ClientSession, origin_x: float, origin_y: float, size: int, zoom: int
+) -> Any | None:
+    """Translucent layer with the latest infrared frame's cold cloud tops only.
+
+    Covers the square area of `size` world pixels at `zoom` starting at
+    (origin_x, origin_y) — the radar camera's own mosaic — fetched at GIBS'
+    max infrared zoom and scaled to match, like radar.py does with
+    RainViewer's tiles. Shows convection RainViewer often misses: its
+    Argentina coverage is thin. None if GIBS has no recent frame.
+
+    Its handful of tiles skip the shared GIBS queue (_tile_semaphore): a
+    satellite animation's hundreds of queued tiles would hold up the radar
+    image, which must stay quick (see camera.py).
+    """
+    from PIL import Image, ImageFilter
+
+    latest = await _resolve_latest_frame_time(
+        session, GIBS_LAYER_INFRARED, GIBS_MATRIX_SET_INFRARED
+    )
+    if latest is None:
+        return None
+
+    tile = SATELLITE_TILE_SIZE
+    scale = 2.0 ** (GIBS_MAX_ZOOM_INFRARED - zoom)
+    x0, y0, size_ir = origin_x * scale, origin_y * scale, size * scale
+    tx0, tx1 = int(x0 // tile), int((x0 + size_ir) // tile)
+    ty0, ty1 = int(y0 // tile), int((y0 + size_ir) // tile)
+    positions = [(tx, ty) for tx in range(tx0, tx1 + 1) for ty in range(ty0, ty1 + 1)]
+    # GIBS publishes a frame's tiles incrementally, so the newest one can
+    # still be missing some: fall back to the previous frames.
+    for when in (latest - i * _FRAME_INTERVAL for i in range(_COLD_TOPS_MAX_FRAMES_BACK)):
+        time_str = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+        tiles = await asyncio.gather(
+            *(
+                _fetch_tile_unqueued(
+                    session,
+                    GIBS_TILE_URL_TEMPLATE.format(
+                        layer=GIBS_LAYER_INFRARED,
+                        time=time_str,
+                        matrix_set=GIBS_MATRIX_SET_INFRARED,
+                        z=GIBS_MAX_ZOOM_INFRARED,
+                        x=tx,
+                        y=ty,
+                    ),
+                )
+                for tx, ty in positions
+            )
+        )
+        # Band13 tiles are fully opaque; a failed fetch comes back fully transparent.
+        if all(tile_img.getchannel("A").getbbox() for tile_img in tiles):
+            break
+    else:
+        return None
+
+    raw = Image.new("RGBA", ((tx1 - tx0 + 1) * tile, (ty1 - ty0 + 1) * tile))
+    for (tx, ty), tile_img in zip(positions, tiles):
+        raw.paste(tile_img, ((tx - tx0) * tile, (ty - ty0) * tile))
+    left, top = round(x0 - tx0 * tile), round(y0 - ty0 * tile)
+    layer = raw.crop((left, top, left + round(size_ir), top + round(size_ir)))
+    layer = layer.resize((size, size), Image.BICUBIC).filter(
+        ImageFilter.GaussianBlur(radius=_COLD_TOPS_BLUR_RADIUS)
+    )
+
+    span = _COLD_TOPS_FULL_SATURATION - _COLD_TOPS_MIN_SATURATION
+    mask = (
+        layer.convert("RGB")
+        .convert("HSV")
+        .getchannel("S")
+        .point(
+            lambda s: 0
+            if s < _COLD_TOPS_MIN_SATURATION
+            else round(min(1, (s - _COLD_TOPS_MIN_SATURATION) / span) * 255 * _COLD_TOPS_OPACITY)
+        )
+    )
+    layer.putalpha(mask)
+    return layer
 
 
 async def build_region_animation_frames(
