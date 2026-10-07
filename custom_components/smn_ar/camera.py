@@ -8,6 +8,7 @@ warning/shortterm data used by sensor.py).
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
@@ -24,7 +25,7 @@ from homeassistant.components.http import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
@@ -47,7 +48,7 @@ from .const import (
     RAINVIEWER_ATTRIBUTION,
     SATELLITE_ANIMATION_UPDATE_INTERVAL,
 )
-from .coordinator import ArgentinaSMNDataUpdateCoordinator
+from .coordinator import ArgentinaSMNData, ArgentinaSMNDataUpdateCoordinator
 from .alerts_map import build_country_alerts_jpeg
 from .radar import build_radar_snapshot_jpeg
 from .satellite import build_region_animation_frames, encode_gif, encode_mp4
@@ -122,7 +123,132 @@ def _remove_stale_cameras(
             registry.async_remove(entry.entity_id)
 
 
-class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
+# How long a request for the image waits for a rebuild that includes
+# just-changed avisos before settling for the previous frame. Home
+# Assistant's own snapshot timeout is 10s.
+_FRESH_IMAGE_WAIT = 8
+
+
+def _alerts_key(alerts: list[dict[str, Any]]) -> frozenset[tuple[Any, ...]]:
+    """Which avisos an image was drawn with, to tell when it's out of date."""
+    return frozenset(ArgentinaSMNData._shortterm_alert_signature(alert) for alert in alerts)
+
+
+class _SMNAlertsImageCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
+    """Static JPEG with SMN's aviso polygons, rebuilt in the background.
+
+    Rebuilt every RADAR_UPDATE_INTERVAL, and also right away when a
+    coordinator update brings a different set of avisos. Without the
+    latter, an automation that fires when an alert turns on and attaches
+    this camera's image (WhatsApp, Telegram, etc.) could get a frame drawn
+    before the aviso existed, with no polygon. A request that arrives while
+    that rebuild runs waits for it (up to _FRESH_IMAGE_WAIT).
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: ArgentinaSMNDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+        Camera.__init__(self)
+        # Camera.__init__ sets self.content_type = DEFAULT_CONTENT_TYPE
+        # already (image/jpeg), so this is redundant, but kept explicit
+        # since past bugs here came from setting it as a class attribute
+        # instead of an instance one after super().__init__().
+        self.content_type = "image/jpeg"
+        self._config_entry = config_entry
+        self._image: bytes | None = None
+        self._image_alerts_key: frozenset[tuple[Any, ...]] | None = None
+        self._refresh_task: asyncio.Task[None] | None = None
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._config_entry.entry_id)},
+            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
+            manufacturer="Servicio Meteorológico Nacional",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    def _current_alerts(self) -> list[dict[str, Any]]:
+        # Nationwide list, not the per-location one: see
+        # build_radar_snapshot_jpeg's docstring for why (SMN's own
+        # per-location filter is stricter than what's actually visible
+        # on the map).
+        data = self.coordinator.data
+        return data.nationwide_shortterm_alerts if data else []
+
+    async def _async_build_image(self, alerts: list[dict[str, Any]]) -> bytes | None:
+        raise NotImplementedError
+
+    async def async_added_to_hass(self) -> None:
+        """Build the first frame right away, then keep it fresh in the background."""
+        await super().async_added_to_hass()
+        self._async_start_refresh()
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass,
+                self._async_scheduled_refresh,
+                timedelta(seconds=RADAR_UPDATE_INTERVAL),
+            )
+        )
+
+    @callback
+    def _async_scheduled_refresh(self, _now: datetime | None = None) -> None:
+        self._async_start_refresh()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        if _alerts_key(self._current_alerts()) != self._image_alerts_key:
+            self._async_start_refresh()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _async_start_refresh(self) -> asyncio.Task[None]:
+        """Start a rebuild unless one is already running; return it either way."""
+        if self._refresh_task is None or self._refresh_task.done():
+            self._refresh_task = self.hass.async_create_task(self._async_refresh())
+        return self._refresh_task
+
+    async def _async_refresh(self) -> None:
+        """Rebuild the cached JPEG, again if the avisos changed mid-build."""
+        while True:
+            alerts = self._current_alerts()
+            key = _alerts_key(alerts)
+            try:
+                image = await self._async_build_image(alerts)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("Error building %s image: %s", self.entity_id, err, exc_info=True)
+                return
+            if not image:
+                return
+            self._image = image
+            self._image_alerts_key = key
+            if _alerts_key(self._current_alerts()) == key:
+                return
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        """Return the cached JPEG, waiting for a rebuild if it lacks current avisos.
+
+        Normally this is already warm from the background refresh. If it's
+        the very first call, or the avisos changed since the last frame,
+        wait (briefly) for the rebuild rather than return a stale image.
+        """
+        if self._image is None or self._image_alerts_key != _alerts_key(self._current_alerts()):
+            task = self._async_start_refresh()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), _FRESH_IMAGE_WAIT)
+            except TimeoutError:
+                _LOGGER.debug("%s rebuild still running, serving the previous frame", self.entity_id)
+        return self._image
+
+
+class SMNRadarCamera(_SMNAlertsImageCamera):
     """Precipitation radar mosaic with SMN's active alert zones outlined.
 
     A static JPEG (not an animated GIF): most notification integrations
@@ -132,16 +258,13 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
     mis-typed by several of those. See radar.py's docstring for the full
     reasoning.
 
-    The JPEG is rebuilt proactively in the background every
-    RADAR_UPDATE_INTERVAL, not lazily on first request — building it
+    The JPEG is rebuilt proactively in the background (see
+    _SMNAlertsImageCamera), not lazily on first request — building it
     (roughly two dozen tile fetches, even fully parallelized) can take a
     few seconds, which is enough to blow past the short timeout some
-    notification services use when attaching a camera snapshot. With a
-    background refresh, async_camera_image almost always just returns an
-    already-built image instantly.
+    notification services use when attaching a camera snapshot.
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "radar"
     _attr_attribution = RAINVIEWER_ATTRIBUTION
 
@@ -153,99 +276,29 @@ class SMNRadarCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camer
         latitude: float,
         longitude: float,
     ) -> None:
-        super().__init__(coordinator)
-        Camera.__init__(self)
-        # Camera.__init__ sets self.content_type = DEFAULT_CONTENT_TYPE
-        # already (image/jpeg), so this is redundant, but kept explicit
-        # since past bugs here came from setting it as a class attribute
-        # instead of an instance one after super().__init__().
-        self.content_type = "image/jpeg"
+        super().__init__(coordinator, config_entry)
         self._attr_unique_id = f"{config_entry.entry_id}_radar"
         self._latitude = latitude
         self._longitude = longitude
-        self._cached_image: bytes | None = None
-        self._config_entry = config_entry
-        self._refreshing = False
 
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
+    async def _async_build_image(self, alerts: list[dict[str, Any]]) -> bytes | None:
+        data = self.coordinator.data
+        image = await build_radar_snapshot_jpeg(
+            async_get_clientsession(self.hass),
+            self._latitude,
+            self._longitude,
+            alerts=alerts,
+            current_weather=data.current_weather_data if data else None,
+            hourly_forecast=data.hourly_forecast if data else None,
         )
-
-    async def async_added_to_hass(self) -> None:
-        """Start the background refresh loop once the entity is registered."""
-        await super().async_added_to_hass()
-
-        # Build the first frame right away instead of waiting a full
-        # RADAR_UPDATE_INTERVAL for the periodic refresh below.
-        self.hass.async_create_task(self._async_refresh())
-
-        self.async_on_remove(
-            async_track_time_interval(
-                self.hass,
-                self._async_scheduled_refresh,
-                timedelta(seconds=RADAR_UPDATE_INTERVAL),
-            )
-        )
-
-    async def _async_scheduled_refresh(self, _now=None) -> None:
-        await self._async_refresh()
-
-    async def _async_refresh(self) -> None:
-        """Rebuild the cached JPEG in the background."""
-        if self._refreshing:
-            return
-        self._refreshing = True
-        try:
-            session = async_get_clientsession(self.hass)
-            data = self.coordinator.data
-            # Nationwide list, not the per-location one: see
-            # build_radar_snapshot_jpeg's docstring for why (SMN's own
-            # per-location filter is stricter than what's actually visible
-            # on the map).
-            alerts = data.nationwide_shortterm_alerts if data else []
-            current_weather = data.current_weather_data if data else None
-            hourly_forecast = data.hourly_forecast if data else None
-            image = await build_radar_snapshot_jpeg(
-                session,
+        if not image and not self._image:
+            _LOGGER.warning(
+                "No radar image available yet for %s,%s (RainViewer "
+                "fetch failed and no cached frame exists)",
                 self._latitude,
                 self._longitude,
-                alerts=alerts,
-                current_weather=current_weather,
-                hourly_forecast=hourly_forecast,
             )
-            if image:
-                self._cached_image = image
-            elif not self._cached_image:
-                _LOGGER.warning(
-                    "No radar image available yet for %s,%s (RainViewer "
-                    "fetch failed and no cached frame exists)",
-                    self._latitude,
-                    self._longitude,
-                )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.error("Error building radar image: %s", err, exc_info=True)
-        finally:
-            self._refreshing = False
-
-    async def async_camera_image(
-        self, width: int | None = None, height: int | None = None
-    ) -> bytes | None:
-        """Return the cached radar+alerts JPEG.
-
-        Normally this is already warm from the background refresh loop. If
-        it's genuinely the very first call and that hasn't completed yet,
-        build it synchronously this once rather than return nothing.
-        """
-        if self._cached_image is None and not self._refreshing:
-            await self._async_refresh()
-        return self._cached_image
-
-
+        return image
 
 
 class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
@@ -470,7 +523,7 @@ class SMNSatelliteProvinceCamera(_SMNSatelliteAnimationCamera):
         )
 
 
-class SMNCountryAlertsCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
+class SMNCountryAlertsCamera(_SMNAlertsImageCamera):
     """Map of Argentina with every active short-term warning polygon (SMN's own geometry).
 
     Static JPEG on an OpenStreetMap basemap, rebuilt in the background like
@@ -478,7 +531,6 @@ class SMNCountryAlertsCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator
     one, so it shows warnings anywhere in the country.
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "country_alerts"
     _attr_attribution = "Avisos: SMN · Mapa: © OpenStreetMap contributors"
 
@@ -490,54 +542,11 @@ class SMNCountryAlertsCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator
         latitude: float,
         longitude: float,
     ) -> None:
-        super().__init__(coordinator)
-        Camera.__init__(self)
-        self.content_type = "image/jpeg"
+        super().__init__(coordinator, config_entry)
         self._attr_unique_id = f"{config_entry.entry_id}_country_alerts"
-        self._config_entry = config_entry
         self._pin = (latitude, longitude)
-        self._image: bytes | None = None
-        self._refreshing = False
 
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
+    async def _async_build_image(self, alerts: list[dict[str, Any]]) -> bytes | None:
+        return await build_country_alerts_jpeg(
+            async_get_clientsession(self.hass), alerts, self._pin
         )
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        self.hass.async_create_task(self._async_refresh())
-        self.async_on_remove(
-            async_track_time_interval(
-                self.hass, self._async_refresh, timedelta(seconds=RADAR_UPDATE_INTERVAL)
-            )
-        )
-
-    async def _async_refresh(self, _now=None) -> None:
-        if self._refreshing:
-            return
-        self._refreshing = True
-        try:
-            data = self.coordinator.data
-            image = await build_country_alerts_jpeg(
-                async_get_clientsession(self.hass),
-                data.nationwide_shortterm_alerts if data else [],
-                self._pin,
-            )
-            if image:
-                self._image = image
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.error("Error building country alerts map: %s", err, exc_info=True)
-        finally:
-            self._refreshing = False
-
-    async def async_camera_image(
-        self, width: int | None = None, height: int | None = None
-    ) -> bytes | None:
-        if self._image is None and not self._refreshing:
-            await self._async_refresh()
-        return self._image

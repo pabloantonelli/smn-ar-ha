@@ -70,7 +70,7 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 
 - **Avisos a corto plazo**: cada 10 min.
 - **Clima, pronóstico y alertas de zona**: cada 30 min.
-- **Radar y mapa de avisos**: cada 10 min.
+- **Radar y mapa de avisos**: cada 10 min, y al instante cuando aparece o termina un aviso (así la imagen que mandás en una notificación ya trae el polígono).
 - **Satélite**: cada 20 min.
 
 Para encontrar el `entity_id` de una entidad, entrá a Herramientas de
