@@ -115,6 +115,7 @@ RADAR_COLOR_SCHEME: Final = 2  # "Universal Blue"
 # this zoom instead and scales the result up to fit.
 RAINVIEWER_MAX_ZOOM: Final = 7
 RADAR_UPDATE_INTERVAL: Final = 600  # 10 min, matches RainViewer's frame cadence
+RADAR_ANIMATION_FRAMES: Final = 10  # last ~100 min (RainViewer keeps ~2h)
 
 # Satellite imagery: NASA GIBS (Global Imagery Browse Services), a public
 # WMTS/XYZ tile service (no API key) built on the same GOES-East ABI data

@@ -1,6 +1,6 @@
-"""Camera platform: precipitation radar (RainViewer) + SMN's alert zones,
-and animated NASA GIBS satellite views of the country and of the configured
-location's province (color and infrared).
+"""Camera platform: animated precipitation radar (RainViewer) + SMN's alert
+zones, a map of the country's avisos, and animated NASA GIBS satellite views
+of the country and of the configured location's province (color and infrared).
 
 Not sourced from SMN's map servers — see radar.py / const.py for why. The
 alert zone polygons drawn on the radar ARE from SMN though (the same
@@ -12,6 +12,7 @@ import asyncio
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+import time
 from typing import Any
 
 from aiohttp import web
@@ -50,7 +51,7 @@ from .const import (
 )
 from .coordinator import ArgentinaSMNData, ArgentinaSMNDataUpdateCoordinator
 from .alerts_map import build_country_alerts_jpeg
-from .radar import build_radar_snapshot_jpeg
+from .radar import RadarLayers, fetch_radar_layers, render_radar_frames
 from .satellite import build_region_animation_frames, encode_gif, encode_mp4
 
 _LOGGER = logging.getLogger(__name__)
@@ -134,8 +135,49 @@ def _alerts_key(alerts: list[dict[str, Any]]) -> frozenset[tuple[Any, ...]]:
     return frozenset(ArgentinaSMNData._shortterm_alert_signature(alert) for alert in alerts)
 
 
+class _SMNVideoMixin:
+    """An animated camera's MP4, served by SMNSatelliteVideoView.
+
+    Dashboards render the camera image in an <img>, which only Safari can
+    play an MP4 in, so the camera image is a GIF and the smoother, lighter
+    looping MP4 is what `entity_picture` points to. Notifiers that send
+    whatever `entity_picture` serves get the video, and the bundled
+    smn-ar-video-card (frontend/) plays it in a loop on the dashboard.
+    Goes first among a camera's bases, so `super()` here reaches Camera.
+    """
+
+    video: bytes | None = None
+    _video_built_at: datetime | None = None
+
+    @property
+    def entity_picture(self) -> str:
+        """The MP4 once built, else the default still."""
+        if not self.video:
+            return super().entity_picture
+        return f"/api/{DOMAIN}/video/{self.entity_id}?token={self.access_tokens[-1]}"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """When the animation was last rebuilt (entity_picture also changes as its token rotates)."""
+        if not self._video_built_at:
+            return {}
+        return {"animation_updated": self._video_built_at.isoformat()}
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.hass.data.setdefault(_VIDEOS_KEY, {})[self.entity_id] = self
+        self.async_on_remove(lambda: self.hass.data[_VIDEOS_KEY].pop(self.entity_id, None))
+
+    async def _async_encode_video(self, frames: list[Any]) -> None:
+        video = await self.hass.async_add_executor_job(encode_mp4, frames)
+        if video:
+            self.video = video
+            self._video_built_at = dt_util.utcnow()
+            self.async_write_ha_state()
+
+
 class _SMNAlertsImageCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
-    """Static JPEG with SMN's aviso polygons, rebuilt in the background.
+    """Image with SMN's aviso polygons, rebuilt in the background.
 
     Rebuilt every RADAR_UPDATE_INTERVAL, and also right away when a
     coordinator update brings a different set of avisos. Without the
@@ -248,21 +290,18 @@ class _SMNAlertsImageCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator]
         return self._image
 
 
-class SMNRadarCamera(_SMNAlertsImageCamera):
-    """Precipitation radar mosaic with SMN's active alert zones outlined.
+class SMNRadarCamera(_SMNVideoMixin, _SMNAlertsImageCamera):
+    """Precipitation radar animation with SMN's active alert zones outlined.
 
-    A static JPEG (not an animated GIF): most notification integrations
-    that let you attach a "camera" entity (Telegram, WhatsApp-via-Baileys,
-    etc.) assume a plain photo, the same way HA's own default camera
-    content type is JPEG. An animated GIF gets silently rejected or
-    mis-typed by several of those. See radar.py's docstring for the full
-    reasoning.
+    Like the satellite cameras: a GIF as the camera image and an MP4 for
+    the dashboard card (see _SMNVideoMixin). Built in the background (see
+    _SMNAlertsImageCamera) — the fetch (well over a hundred tiles) takes a
+    few seconds, enough to blow past the short timeout some notification
+    services use when attaching a camera snapshot.
 
-    The JPEG is rebuilt proactively in the background (see
-    _SMNAlertsImageCamera), not lazily on first request — building it
-    (roughly two dozen tile fetches, even fully parallelized) can take a
-    few seconds, which is enough to blow past the short timeout some
-    notification services use when attaching a camera snapshot.
+    The downloaded layers are kept, so a change in the avisos between
+    scheduled refreshes only redraws the frames: quick enough for an
+    automation that fires on a new aviso to get its polygon.
     """
 
     _attr_translation_key = "radar"
@@ -277,38 +316,40 @@ class SMNRadarCamera(_SMNAlertsImageCamera):
         longitude: float,
     ) -> None:
         super().__init__(coordinator, config_entry)
+        self.content_type = "image/gif"
         self._attr_unique_id = f"{config_entry.entry_id}_radar"
         self._latitude = latitude
         self._longitude = longitude
+        self._layers: RadarLayers | None = None
+        self._layers_fetched_at = 0.0
 
     async def _async_build_image(self, alerts: list[dict[str, Any]]) -> bytes | None:
+        # A minute of slack, so the scheduled refresh always fetches again.
+        if self._layers is None or time.monotonic() - self._layers_fetched_at >= RADAR_UPDATE_INTERVAL - 60:
+            self._layers = await fetch_radar_layers(
+                async_get_clientsession(self.hass), self._latitude, self._longitude
+            )
+            self._layers_fetched_at = time.monotonic()
         data = self.coordinator.data
-        image = await build_radar_snapshot_jpeg(
-            async_get_clientsession(self.hass),
+        frames = await self.hass.async_add_executor_job(
+            render_radar_frames,
+            self._layers,
             self._latitude,
             self._longitude,
-            alerts=alerts,
-            current_weather=data.current_weather_data if data else None,
-            hourly_forecast=data.hourly_forecast if data else None,
+            alerts,
+            data.current_weather_data if data else None,
+            data.hourly_forecast if data else None,
         )
-        if not image and not self._image:
-            _LOGGER.warning(
-                "No radar image available yet for %s,%s (RainViewer "
-                "fetch failed and no cached frame exists)",
-                self._latitude,
-                self._longitude,
-            )
+        image = await self.hass.async_add_executor_job(encode_gif, frames)
+        # The GIF is what a snapshot waits for; the MP4 follows on its own.
+        self.hass.async_create_task(self._async_encode_video(frames))
         return image
 
 
-class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera):
-    """Animated satellite view: a GIF as the camera image, plus an MP4.
-
-    Dashboards render the camera image in an <img>, which only Safari can
-    play an MP4 in, so the image is a GIF and the smoother, lighter looping
-    MP4 is what `entity_picture` points to (SMNSatelliteVideoView). Notifiers that
-    send whatever `entity_picture` serves get the video, and the bundled
-    smn-ar-video-card (frontend/) plays it in a loop on the dashboard.
+class _SMNSatelliteAnimationCamera(
+    _SMNVideoMixin, CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Camera
+):
+    """Animated satellite view: a GIF as the camera image, plus an MP4 (see _SMNVideoMixin).
 
     Built in the background and served from cache, so a request never waits
     on GIBS (the radar camera does the same — see its docstring).
@@ -337,8 +378,6 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
         self._longitude = longitude
         self._force_infrared = force_infrared
         self._image: bytes | None = None
-        self.video: bytes | None = None
-        self._video_built_at: datetime | None = None
         self._refreshing = False
 
     @property
@@ -350,24 +389,8 @@ class _SMNSatelliteAnimationCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoord
             entry_type=DeviceEntryType.SERVICE,
         )
 
-    @property
-    def entity_picture(self) -> str:
-        """The MP4 once built (see the class docstring), else the default still."""
-        if not self.video:
-            return super().entity_picture
-        return f"/api/{DOMAIN}/video/{self.entity_id}?token={self.access_tokens[-1]}"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """When the animation was last rebuilt (entity_picture also changes as its token rotates)."""
-        if not self._video_built_at:
-            return {}
-        return {"animation_updated": self._video_built_at.isoformat()}
-
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        self.hass.data.setdefault(_VIDEOS_KEY, {})[self.entity_id] = self
-        self.async_on_remove(lambda: self.hass.data[_VIDEOS_KEY].pop(self.entity_id, None))
         self.hass.async_create_task(self._async_refresh())
         self.async_on_remove(
             async_track_time_interval(

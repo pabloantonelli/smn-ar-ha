@@ -61,7 +61,7 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 
 | Nombre | Qué muestra |
 |---|---|
-| Radar | Radar de precipitación de ~300 km alrededor, con las nubes de tormenta vistas por satélite (infrarrojo), el clima actual y los avisos cercanos |
+| Radar | Animación de los últimos ~100 min del radar de precipitación, ~300 km alrededor, con las nubes de tormenta vistas por satélite (infrarrojo), el clima actual y los avisos cercanos |
 | Avisos Argentina | Mapa del país con los polígonos de todos los avisos vigentes y tu ubicación |
 | Satélite Argentina / Satélite provincia | Animación satelital de los últimos ~100 min en color real. De noche pasa sola a una vista nocturna |
 | … Infrarrojo | Igual, mostrando la temperatura de los topes de nube. Sirve para ver la intensidad de una tormenta |

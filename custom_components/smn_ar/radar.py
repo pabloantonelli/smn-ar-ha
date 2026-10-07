@@ -1,18 +1,15 @@
-"""Precipitation radar snapshot built from RainViewer's public tile API.
+"""Precipitation radar animation built from RainViewer's public tile API.
 
 Not sourced from SMN: see the note in const.py for why. This module fetches
-the latest radar frame as a small tile mosaic around a lat/lon, composites
-SMN's own active alert zones on top, and adds a short weather/forecast
-caption — all baked into a single static JPEG.
+the last RADAR_ANIMATION_FRAMES radar frames as a small tile mosaic around a
+lat/lon, with the infrared satellite's cold cloud tops underneath (RainViewer's
+Argentina coverage is thin, so it often misses storms the satellite sees),
+and draws SMN's own active alert zones and a short weather/forecast caption
+on top. camera.py encodes the frames like the satellite cameras: a GIF as
+the camera image and an MP4 for the dashboard card.
 
-This used to build an animated GIF (several frames stitched together), but
-that broke attaching the camera as a message attachment in most
-notification integrations (Telegram, WhatsApp-via-Baileys, etc.), which
-assume a camera entity is a static photo the way HA's own default camera
-content type (JPEG) implies. RainViewer's Argentina coverage is thin enough
-that the animation rarely showed real movement anyway, so a static image
-with more useful info (temperature, condition, next-hours forecast) is a
-better trade.
+Fetching (fetch_radar_layers) and drawing (render_radar_frames) are split
+so a change in the avisos only redraws the frames, without fetching again.
 """
 from __future__ import annotations
 
@@ -21,7 +18,8 @@ import io
 import logging
 import math
 import os
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -35,6 +33,7 @@ from .const import (
     BASEMAP_USER_AGENT,
     CONDITION_ID_MAP,
     CONDITION_LABELS_ES,
+    RADAR_ANIMATION_FRAMES,
     RADAR_COLOR_SCHEME,
     RADAR_TILE_GRID,
     RADAR_TILE_SIZE,
@@ -239,8 +238,10 @@ def _wrap_text(text: str, font: Any, draw: Any, max_width: int) -> list[str]:
     return lines
 
 
-def _draw_alert_caption(frame: Any, alerts: list[dict[str, Any]]) -> None:
+def _draw_alert_caption(frame: Any, alerts: list[dict[str, Any]], bottom: int = 0) -> None:
     """Draw the SMN aviso's own text (title + validity) as a caption banner.
+
+    `bottom` leaves that many pixels free under it (the timeline bar).
 
     Same text already shown by the short_term_summary sensor, burned into
     the image itself so it reads like SMN's/other providers' map popups
@@ -282,13 +283,14 @@ def _draw_alert_caption(frame: Any, alerts: list[dict[str, Any]]) -> None:
     line_height = font.size + 4 if hasattr(font, "size") else 18
     banner_height = len(lines) * line_height + 2 * padding
 
+    bottom_y = frame.height - bottom
     draw.rectangle(
-        [(0, frame.height - banner_height), (frame.width, frame.height)],
+        [(0, bottom_y - banner_height), (frame.width, bottom_y)],
         fill=(0, 0, 0, 170),
     )
     for i, line in enumerate(lines):
         draw.text(
-            (padding, frame.height - banner_height + padding + i * line_height),
+            (padding, bottom_y - banner_height + padding + i * line_height),
             line,
             font=font,
             fill=(255, 255, 255, 255),
@@ -434,8 +436,10 @@ def _draw_cloud_tops_legend(frame: Any, top: int) -> None:
     )
 
 
-async def _fetch_frame_paths(session: aiohttp.ClientSession) -> tuple[str, list[str]]:
-    """Return (tile_host, [frame_path, ...]) for the most recent frames."""
+async def _fetch_frame_paths(
+    session: aiohttp.ClientSession,
+) -> tuple[str, list[tuple[datetime, str]]]:
+    """Return (tile_host, [(UTC time, frame_path), ...]) for the most recent frames, oldest first."""
     async with async_timeout.timeout(10):
         response = await session.get(RAINVIEWER_INDEX_URL)
         response.raise_for_status()
@@ -443,8 +447,29 @@ async def _fetch_frame_paths(session: aiohttp.ClientSession) -> tuple[str, list[
 
     host = data["host"]
     past = data.get("radar", {}).get("past", [])
-    frames = [f["path"] for f in past[-1:]]
+    frames = [
+        (datetime.fromtimestamp(f["time"], timezone.utc), f["path"])
+        for f in past[-RADAR_ANIMATION_FRAMES:]
+    ]
     return host, frames
+
+
+_MAX_CONCURRENT_TILE_FETCHES = 16
+_TILE_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _tile_semaphore() -> asyncio.Semaphore:
+    """Cap on in-flight radar/basemap tile requests.
+
+    An animation fetches well over a hundred tiles at once; queued in the
+    connection pool, their timeout would run out before they were even
+    sent (see satellite.py's _tile_semaphore). Separate from that one so
+    the radar camera never waits behind a satellite animation.
+    """
+    global _TILE_SEMAPHORE  # noqa: PLW0603
+    if _TILE_SEMAPHORE is None:
+        _TILE_SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENT_TILE_FETCHES)
+    return _TILE_SEMAPHORE
 
 
 async def _fetch_tile(
@@ -454,7 +479,7 @@ async def _fetch_tile(
     from PIL import Image
 
     try:
-        async with async_timeout.timeout(6):
+        async with _tile_semaphore(), async_timeout.timeout(6):
             resp = await session.get(url, headers=headers)
             resp.raise_for_status()
             tile_bytes = await resp.read()
@@ -506,15 +531,15 @@ async def _fetch_radar_layer(
     center_x: int,
     center_y: int,
 ):
-    """Fetch RainViewer's radar tiles for the mosaic's area and scale to match it.
+    """Fetch RainViewer's radar tiles for the mosaic's area, at RainViewer's own zoom.
 
     RainViewer's radar tiles top out at RAINVIEWER_MAX_ZOOM (zoom 8+ returns
     a "Zoom Level Not Supported" placeholder image) — verified directly
     against their tile server. When RADAR_ZOOM is higher than that (for a
     more detailed basemap), the radar tiles covering the same area are
-    fetched at RAINVIEWER_MAX_ZOOM instead and resized up to fit, so the
-    map itself can still be more zoomed in even though the radar data's
-    own resolution is capped by RainViewer.
+    fetched at RAINVIEWER_MAX_ZOOM instead, and render_radar_frames
+    scales them up to fit, so the map itself can still be more zoomed in
+    even though the radar data's own resolution is capped by RainViewer.
     """
     from PIL import Image
 
@@ -575,25 +600,94 @@ async def _fetch_radar_layer(
 
     crop_left = round(origin_x_r - tile_x_start * RADAR_TILE_SIZE)
     crop_top = round(origin_y_r - tile_y_start * RADAR_TILE_SIZE)
-    cropped = raw.crop(
+    return raw.crop(
         (crop_left, crop_top, crop_left + round(size_r), crop_top + round(size_r))
     )
-    return cropped.resize((target_size, target_size), Image.NEAREST)
 
 
-async def build_radar_snapshot_jpeg(
-    session: aiohttp.ClientSession,
+@dataclass
+class RadarFrame:
+    """One animation frame's data, before anything is drawn on it."""
+
+    when: datetime  # UTC
+    radar: Any | None  # RainViewer layer at its own zoom (see _fetch_radar_layer)
+    cloud_tops: Any | None  # infrared raster (see satellite.cold_cloud_tops_layer)
+
+
+@dataclass
+class RadarLayers:
+    """Everything fetch_radar_layers downloads for one animation."""
+
+    center_x: int
+    center_y: int
+    basemap: Any
+    frames: list[RadarFrame]  # oldest first
+
+
+async def fetch_radar_layers(
+    session: aiohttp.ClientSession, latitude: float, longitude: float
+) -> RadarLayers:
+    """Download the basemap once, plus each frame's radar and infrared layers.
+
+    Frame times are RainViewer's (10 min apart). If RainViewer is down, the
+    animation still shows the infrared over the last RADAR_ANIMATION_FRAMES
+    10-minute slots.
+    """
+    # Imported here: satellite.py imports this module's tile math.
+    from .satellite import fetch_cold_cloud_tops_rasters
+
+    try:
+        host, paths = await _fetch_frame_paths(session)
+    except (aiohttp.ClientError, KeyError) as err:
+        _LOGGER.warning("Error fetching RainViewer frame index: %s", err)
+        host, paths = None, []
+    if paths:
+        times = [when for when, _ in paths]
+    else:
+        now = datetime.now(timezone.utc)
+        aligned = now.replace(minute=now.minute // 10 * 10, second=0, microsecond=0)
+        times = [aligned - timedelta(minutes=10 * i) for i in reversed(range(RADAR_ANIMATION_FRAMES))]
+
+    center_x, center_y = _deg2tile(latitude, longitude, RADAR_ZOOM)
+    half = RADAR_TILE_GRID // 2
+    basemap, cloud_tops, radar_layers = await asyncio.gather(
+        _fetch_basemap_mosaic(session, center_x, center_y),
+        fetch_cold_cloud_tops_rasters(
+            session,
+            (center_x - half) * RADAR_TILE_SIZE,
+            (center_y - half) * RADAR_TILE_SIZE,
+            RADAR_TILE_SIZE * RADAR_TILE_GRID,
+            RADAR_ZOOM,
+            times,
+        ),
+        asyncio.gather(
+            *(_fetch_radar_layer(session, host, path, center_x, center_y) for _, path in paths)
+        ),
+    )
+    radar_by_time = dict(zip(times, radar_layers)) if paths else {}
+    return RadarLayers(
+        center_x,
+        center_y,
+        basemap,
+        [
+            RadarFrame(when, radar_by_time.get(when), clouds)
+            for when, clouds in zip(times, cloud_tops)
+        ],
+    )
+
+
+def render_radar_frames(
+    layers: RadarLayers,
     latitude: float,
     longitude: float,
     alerts: list[dict[str, Any]] | None = None,
     current_weather: dict[str, Any] | None = None,
     hourly_forecast: list[dict[str, Any]] | None = None,
-) -> bytes | None:
-    """Build a single static JPEG: basemap + latest radar frame + overlays.
+) -> list[Any]:
+    """Draw every animation frame (oldest first): layers, then overlays on top.
 
-    A static JPEG (not an animated GIF) so it works as a message attachment
-    in third-party notification integrations that assume a camera entity is
-    a plain photo — see this module's docstring.
+    CPU only, run it in an executor. Encode with satellite.encode_gif /
+    encode_mp4, like the satellite cameras.
 
     `alerts` should be the *nationwide* avisos a muy corto plazo list (SMN's
     own, with their "geometry" field) — not the per-location one. This
@@ -602,46 +696,37 @@ async def build_radar_snapshot_jpeg(
     per-location exact-point filtering: a station can be textually "in" an
     affected zone without its exact coordinate falling inside the drawn
     polygon, leaving the per-location list empty even when the map clearly
-    shows an active alert nearby.
+    shows an active alert nearby. The avisos are the current ones, drawn on
+    every frame.
 
     `current_weather` / `hourly_forecast` are coordinator.data's own fields,
     burned into a caption banner so the image is useful standalone.
     """
-    try:
-        host, frame_paths = await _fetch_frame_paths(session)
-    except (aiohttp.ClientError, KeyError) as err:
-        _LOGGER.warning("Error fetching RainViewer frame index: %s", err)
-        host, frame_paths = None, []
+    from PIL import Image
 
-    center_x, center_y = _deg2tile(latitude, longitude, RADAR_ZOOM)
-
-    # Imported here: satellite.py imports this module's tile math.
-    from .satellite import fetch_cold_cloud_tops_layer
-
-    half = RADAR_TILE_GRID // 2
-    size = RADAR_TILE_SIZE * RADAR_TILE_GRID
-    basemap, cloud_tops, layer = await asyncio.gather(
-        _fetch_basemap_mosaic(session, center_x, center_y),
-        fetch_cold_cloud_tops_layer(
-            session,
-            (center_x - half) * RADAR_TILE_SIZE,
-            (center_y - half) * RADAR_TILE_SIZE,
-            size,
-            RADAR_ZOOM,
-        ),
-        _fetch_radar_layer(session, host, frame_paths[-1], center_x, center_y)
-        if host and frame_paths
-        else asyncio.sleep(0),
+    from .satellite import (
+        _caption_bar_height,
+        _draw_caption,
+        _format_frame_caption,
+        cold_cloud_tops_layer,
     )
 
-    frame = basemap.copy()
-    # Cloud tops under the radar: where both show, the radar's actual
-    # precipitation is the more precise of the two.
-    has_cloud_tops = cloud_tops is not None and cloud_tops.getchannel("A").getbbox() is not None
-    if has_cloud_tops:
-        frame.alpha_composite(cloud_tops)
-    if layer is not None:
-        frame.alpha_composite(layer)
+    center_x, center_y = layers.center_x, layers.center_y
+    size = layers.basemap.width
+    half = RADAR_TILE_GRID // 2
+    origin_x = (center_x - half) * RADAR_TILE_SIZE
+    origin_y = (center_y - half) * RADAR_TILE_SIZE
+
+    # The newest frames can share one infrared raster (GIBS lags behind
+    # RainViewer): process each distinct one once.
+    processed: dict[int, Any] = {}
+    cloud_layers = []
+    for frame_data in layers.frames:
+        raster = frame_data.cloud_tops
+        if raster is not None and id(raster) not in processed:
+            processed[id(raster)] = cold_cloud_tops_layer(raster, size)
+        cloud_layers.append(processed.get(id(raster)) if raster is not None else None)
+    has_cloud_tops = any(layer is not None for layer in cloud_layers)
 
     # Always the national outline here, not the province's: this camera is
     # zoomed in tight around one lat/lon (a fixed ~area, no zoom control),
@@ -651,24 +736,35 @@ async def build_radar_snapshot_jpeg(
     # visible at its own natural zoom belongs on a dedicated camera
     # instead (see satellite.py's region cameras).
     rings = get_country_rings()
-    if rings:
-        half = RADAR_TILE_GRID // 2
-        origin_x = (center_x - half) * RADAR_TILE_SIZE
-        origin_y = (center_y - half) * RADAR_TILE_SIZE
-        draw_region_overlay(
-            frame, rings, lambda lat, lon: _deg2pixel(lat, lon, RADAR_ZOOM), origin_x, origin_y
-        )
-
     visible_alerts = filter_alerts_in_view(alerts, center_x, center_y) if alerts else []
-    if visible_alerts:
-        _draw_alert_polygons(frame, visible_alerts, center_x, center_y)
-        _draw_alert_caption(frame, visible_alerts)
+    total = len(layers.frames)
+    timeline_height = _caption_bar_height(size, total > 1)
 
-    _draw_location_pin(frame, latitude, longitude, center_x, center_y)
-    panel_height = _draw_forecast_panel(frame, current_weather, hourly_forecast)
-    if has_cloud_tops:
-        _draw_cloud_tops_legend(frame, panel_height)
-
-    buffer = io.BytesIO()
-    frame.convert("RGB").save(buffer, format="JPEG", quality=85)
-    return buffer.getvalue()
+    frames = []
+    for i, (frame_data, clouds) in enumerate(zip(layers.frames, cloud_layers)):
+        frame = layers.basemap.copy()
+        # Cloud tops under the radar: where both show, the radar's actual
+        # precipitation is the more precise of the two.
+        if clouds is not None:
+            frame.alpha_composite(clouds)
+        if frame_data.radar is not None:
+            radar = frame_data.radar
+            if radar.size != frame.size:
+                radar = radar.resize(frame.size, Image.NEAREST)
+            frame.alpha_composite(radar)
+        if rings:
+            draw_region_overlay(
+                frame, rings, lambda lat, lon: _deg2pixel(lat, lon, RADAR_ZOOM), origin_x, origin_y
+            )
+        if visible_alerts:
+            _draw_alert_polygons(frame, visible_alerts, center_x, center_y)
+            _draw_alert_caption(frame, visible_alerts, bottom=timeline_height)
+        _draw_location_pin(frame, latitude, longitude, center_x, center_y)
+        panel_height = _draw_forecast_panel(frame, current_weather, hourly_forecast)
+        if has_cloud_tops:
+            _draw_cloud_tops_legend(frame, panel_height)
+        _draw_caption(
+            frame, _format_frame_caption(frame_data.when), frame_index=i, total_frames=total
+        )
+        frames.append(frame.convert("RGB"))
+    return frames

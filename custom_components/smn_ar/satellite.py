@@ -657,32 +657,31 @@ def _region_view_for(
 _COLD_TOPS_MIN_SATURATION = 60
 _COLD_TOPS_FULL_SATURATION = 140
 _COLD_TOPS_OPACITY = 0.5
-_COLD_TOPS_BLUR_RADIUS = 6
-_COLD_TOPS_MAX_FRAMES_BACK = 3
+_COLD_TOPS_BLUR_RADIUS = 6  # at the radar's output size
 
 
-async def fetch_cold_cloud_tops_layer(
-    session: aiohttp.ClientSession, origin_x: float, origin_y: float, size: int, zoom: int
-) -> Any | None:
-    """Translucent layer with the latest infrared frame's cold cloud tops only.
+async def fetch_cold_cloud_tops_rasters(
+    session: aiohttp.ClientSession,
+    origin_x: float,
+    origin_y: float,
+    size: int,
+    zoom: int,
+    times: list[datetime],
+) -> list[Any | None]:
+    """Band13 infrared for a square area, one raster per `times` (oldest first).
 
-    Covers the square area of `size` world pixels at `zoom` starting at
-    (origin_x, origin_y) — the radar camera's own mosaic — fetched at GIBS'
-    max infrared zoom and scaled to match, like radar.py does with
-    RainViewer's tiles. Shows convection RainViewer often misses: its
-    Argentina coverage is thin. None if GIBS has no recent frame.
+    The area is `size` world pixels at `zoom` starting at (origin_x,
+    origin_y) — the radar camera's own mosaic — fetched at GIBS' max
+    infrared zoom; cold_cloud_tops_layer scales it to match, like radar.py
+    does with RainViewer's tiles. GIBS publishes 10-40 min behind (and a
+    frame's tiles incrementally), so a time without a complete frame gets
+    the closest earlier one that has it, or None.
 
-    Its handful of tiles skip the shared GIBS queue (_tile_semaphore): a
-    satellite animation's hundreds of queued tiles would hold up the radar
-    image, which must stay quick (see camera.py).
+    Its tiles go through radar.py's tile queue, not the shared GIBS one
+    (_tile_semaphore): a satellite animation's hundreds of queued tiles
+    would hold up the radar camera, which must stay quick (see camera.py).
     """
-    from PIL import Image, ImageFilter
-
-    latest = await _resolve_latest_frame_time(
-        session, GIBS_LAYER_INFRARED, GIBS_MATRIX_SET_INFRARED
-    )
-    if latest is None:
-        return None
+    from PIL import Image
 
     tile = SATELLITE_TILE_SIZE
     scale = 2.0 ** (GIBS_MAX_ZOOM_INFRARED - zoom)
@@ -690,9 +689,9 @@ async def fetch_cold_cloud_tops_layer(
     tx0, tx1 = int(x0 // tile), int((x0 + size_ir) // tile)
     ty0, ty1 = int(y0 // tile), int((y0 + size_ir) // tile)
     positions = [(tx, ty) for tx in range(tx0, tx1 + 1) for ty in range(ty0, ty1 + 1)]
-    # GIBS publishes a frame's tiles incrementally, so the newest one can
-    # still be missing some: fall back to the previous frames.
-    for when in (latest - i * _FRAME_INTERVAL for i in range(_COLD_TOPS_MAX_FRAMES_BACK)):
+    left, top = round(x0 - tx0 * tile), round(y0 - ty0 * tile)
+
+    async def fetch(when: datetime) -> Any | None:
         time_str = when.strftime("%Y-%m-%dT%H:%M:%SZ")
         tiles = await asyncio.gather(
             *(
@@ -711,24 +710,36 @@ async def fetch_cold_cloud_tops_layer(
             )
         )
         # Band13 tiles are fully opaque; a failed fetch comes back fully transparent.
-        if all(tile_img.getchannel("A").getbbox() for tile_img in tiles):
-            break
-    else:
-        return None
+        if not all(tile_img.getchannel("A").getbbox() for tile_img in tiles):
+            return None
+        raw = Image.new("RGBA", ((tx1 - tx0 + 1) * tile, (ty1 - ty0 + 1) * tile))
+        for (tx, ty), tile_img in zip(positions, tiles):
+            raw.paste(tile_img, ((tx - tx0) * tile, (ty - ty0) * tile))
+        return raw.crop((left, top, left + round(size_ir), top + round(size_ir)))
 
-    raw = Image.new("RGBA", ((tx1 - tx0 + 1) * tile, (ty1 - ty0 + 1) * tile))
-    for (tx, ty), tile_img in zip(positions, tiles):
-        raw.paste(tile_img, ((tx - tx0) * tile, (ty - ty0) * tile))
-    left, top = round(x0 - tx0 * tile), round(y0 - ty0 * tile)
-    layer = raw.crop((left, top, left + round(size_ir), top + round(size_ir)))
-    layer = layer.resize((size, size), Image.BICUBIC).filter(
-        ImageFilter.GaussianBlur(radius=_COLD_TOPS_BLUR_RADIUS)
+    rasters = await asyncio.gather(*(fetch(when) for when in times))
+    filled: list[Any | None] = []
+    latest = None
+    for raster in rasters:
+        latest = raster or latest
+        filled.append(latest)
+    return filled
+
+
+def cold_cloud_tops_layer(raster: Any, size: int) -> Any | None:
+    """Translucent `size`-px layer with only `raster`'s cold cloud tops, or None if none.
+
+    Blurred and masked at the raster's own (coarse) resolution, then scaled
+    up: smooth, and much cheaper than doing it at full size.
+    """
+    from PIL import Image, ImageFilter
+
+    blurred = raster.convert("RGB").filter(
+        ImageFilter.GaussianBlur(radius=_COLD_TOPS_BLUR_RADIUS * raster.width / size)
     )
-
     span = _COLD_TOPS_FULL_SATURATION - _COLD_TOPS_MIN_SATURATION
     mask = (
-        layer.convert("RGB")
-        .convert("HSV")
+        blurred.convert("HSV")
         .getchannel("S")
         .point(
             lambda s: 0
@@ -736,7 +747,10 @@ async def fetch_cold_cloud_tops_layer(
             else round(min(1, (s - _COLD_TOPS_MIN_SATURATION) / span) * 255 * _COLD_TOPS_OPACITY)
         )
     )
-    layer.putalpha(mask)
+    if mask.getbbox() is None:
+        return None
+    layer = blurred.resize((size, size), Image.BICUBIC).convert("RGBA")
+    layer.putalpha(mask.resize((size, size), Image.BICUBIC))
     return layer
 
 

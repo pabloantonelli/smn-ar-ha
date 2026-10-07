@@ -1,6 +1,6 @@
-// Card for SMN's cameras. Satellite cameras play the looping MP4 their
-// entity_picture points to (smoother than their GIF camera image); the rest
-// (radar, alerts map) show their camera image. Configurable from the visual
+// Card for SMN's cameras. Animated cameras (radar, satellite) play the
+// looping MP4 their entity_picture points to (smoother than their GIF camera
+// image); the alerts map shows its camera image. Configurable from the visual
 // editor.
 //
 //   type: custom:smn-ar-video-card
@@ -277,7 +277,7 @@ class SmnArVideoCard extends HTMLElement {
       this._config.name_position === "hidden" && !this._updated.textContent,
     );
 
-    // The camera image: the satellite's GIF until the video loads, or the
+    // The camera image: the animated camera's GIF until the video loads, or the
     // whole image for the other cameras. Its URL changes with each state
     // write (new image, or the access token rotating), so it stays fresh.
     const token = new URL(picture, location.origin).searchParams.get("token");
