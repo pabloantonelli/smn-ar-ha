@@ -14,7 +14,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import slugify
 
 from .const import ALERT_EVENT_MAP, ALERT_LEVEL_MAP, API_ALERT_PATH, DOMAIN
-from .coordinator import ArgentinaSMNDataUpdateCoordinator
+from .coordinator import ArgentinaSMNDataUpdateCoordinator, SMNNowcastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -142,6 +142,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
+
+    # The nowcast (radar/infrared, for the next rain) refreshes on its own,
+    # in the background: nothing waits on its first fetch.
+    coordinator.nowcast = SMNNowcastCoordinator(hass, entry, coordinator)
+    entry.async_create_background_task(
+        hass, coordinator.nowcast.async_refresh(), f"{DOMAIN}_nowcast_first_refresh"
+    )
 
     # Store coordinator
     hass.data.setdefault(DOMAIN, {})

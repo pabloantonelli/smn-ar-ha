@@ -1,7 +1,8 @@
 """DataUpdateCoordinator for the SMN integration."""
 from __future__ import annotations
 
-from datetime import timedelta
+import asyncio
+from datetime import datetime, timedelta, timezone
 import logging
 import math
 import time
@@ -32,7 +33,21 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_SHORTTERM_ALERT_CHANGED,
+    NOWCAST_UPDATE_INTERVAL,
+    OPEN_METEO_FORECAST_DAYS,
+    OPEN_METEO_HOURLY_FIELDS,
+    OPEN_METEO_URL,
     SHORTTERM_SCAN_INTERVAL,
+)
+from .nowcast import (
+    Nowcast,
+    fetch_infrared_field,
+    fetch_radar_field,
+    fetch_sinarame_field,
+    radar_covers,
+    sinarame_radars_for,
+    run_nowcast,
+    steering_motion,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +111,8 @@ class ArgentinaSMNData:
         self.heat_warnings: dict[str, Any] = {}
         self.cold_warnings: dict[str, Any] = {}
         self.sun: dict[str, Any] = {}
+        # Open-Meteo's hourly forecast (see _fetch_open_meteo_hourly).
+        self.open_meteo_hourly: list[dict[str, Any]] = []
         self._last_full_fetch: float | None = None
 
     @property
@@ -168,6 +185,7 @@ class ArgentinaSMNData:
             await self._fetch_forecast(location_id)
             await self._fetch_sun(location_id)
             await self._fetch_alerts(location_id)
+            await self._fetch_open_meteo_hourly()
             self._last_full_fetch = now
         await self._fetch_shortterm_alerts(location_id)
         await self._fetch_nationwide_shortterm_alerts()
@@ -270,6 +288,36 @@ class ArgentinaSMNData:
                     }
                 )
 
+    async def _fetch_open_meteo_hourly(self) -> None:
+        """Fetch Open-Meteo's hourly forecast for the location (OPEN_METEO_HOURLY_FIELDS).
+
+        Not SMN and not through the proxy (see OPEN_METEO_URL). Keeps the
+        previous data on failure: everything using it falls back to SMN's.
+        """
+        params = {
+            "latitude": self._latitude,
+            "longitude": self._longitude,
+            "hourly": ",".join(OPEN_METEO_HOURLY_FIELDS.values()),
+            "timeformat": "unixtime",
+            "forecast_days": OPEN_METEO_FORECAST_DAYS,
+        }
+        try:
+            async with async_timeout.timeout(10):
+                response = await self._session.get(OPEN_METEO_URL, params=params)
+                response.raise_for_status()
+                data = await response.json()
+            hourly = data["hourly"]
+            columns = [hourly[name] for name in OPEN_METEO_HOURLY_FIELDS.values()]
+            self.open_meteo_hourly = [
+                {
+                    "when": datetime.fromtimestamp(timestamp, timezone.utc),
+                    **dict(zip(OPEN_METEO_HOURLY_FIELDS, values)),
+                }
+                for timestamp, *values in zip(hourly["time"], *columns)
+            ]
+        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, TypeError, ValueError) as err:
+            _LOGGER.debug("Error fetching Open-Meteo hourly forecast: %s", err)
+
     async def _fetch_sun(self, location_id: str) -> None:
         """Fetch sunrise/sunset data."""
         try:
@@ -370,6 +418,8 @@ class ArgentinaSMNDataUpdateCoordinator(DataUpdateCoordinator[ArgentinaSMNData])
         )
         self._config_entry = config_entry
         self._previous_shortterm_signatures: set[tuple[Any, ...]] | None = None
+        # Set up in async_setup_entry, once this one has its first data.
+        self.nowcast: SMNNowcastCoordinator | None = None
 
         super().__init__(
             hass,
@@ -427,3 +477,71 @@ class ArgentinaSMNDataUpdateCoordinator(DataUpdateCoordinator[ArgentinaSMNData])
                 "current": current,
             },
         )
+
+
+class SMNNowcastCoordinator(DataUpdateCoordinator[Nowcast | None]):
+    """Nowcast for the location (see nowcast.py), every NOWCAST_UPDATE_INTERVAL.
+
+    The nearest SINARAME radar; else RainViewer's radar where it has
+    coverage; else the infrared. None when none could be fetched. Separate
+    from the SMN coordinator: different sources and cadence, and a failure
+    here must never take the SMN data down.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config_entry: ConfigEntry,
+        smn_coordinator: ArgentinaSMNDataUpdateCoordinator,
+    ) -> None:
+        self._latitude = config_entry.data[CONF_LATITUDE]
+        self._longitude = config_entry.data[CONF_LONGITUDE]
+        self._smn_coordinator = smn_coordinator
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_nowcast",
+            update_interval=timedelta(seconds=NOWCAST_UPDATE_INTERVAL),
+        )
+
+    async def _async_update_data(self) -> Nowcast | None:
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            _LOGGER.warning("numpy not available, no nowcast for the next rain")
+            return None
+        session = async_get_clientsession(self.hass)
+        smn_data = self._smn_coordinator.data
+        steering = steering_motion(smn_data.open_meteo_hourly if smn_data else None)
+        lat, lon = self._latitude, self._longitude
+
+        async def rainviewer():
+            if await radar_covers(session, lat, lon):
+                return await fetch_radar_field(session, lat, lon)
+            return None
+
+        # Most precise first; the next one when it has nothing to say (a
+        # SINARAME radar whose frames are all artifacts, say).
+        for fetch in (
+            *(
+                lambda radar_id=radar_id: fetch_sinarame_field(session, radar_id, lat, lon)
+                for radar_id in sinarame_radars_for(lat, lon)
+            ),
+            rainviewer,
+            lambda: fetch_infrared_field(session, lat, lon),
+        ):
+            try:
+                field = await fetch()
+            except (aiohttp.ClientError, asyncio.TimeoutError, KeyError) as err:
+                _LOGGER.debug("Error fetching nowcast frames: %s", err)
+                continue
+            if field is None:
+                continue
+            try:
+                nowcast = await self.hass.async_add_executor_job(run_nowcast, field, steering)
+            except Exception:  # noqa: BLE001 - e.g. an image format that changed: try the next source
+                _LOGGER.warning("Error computing the nowcast from %s", field.source, exc_info=True)
+                continue
+            if nowcast is not None:
+                return nowcast
+        return None

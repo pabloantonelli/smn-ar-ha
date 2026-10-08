@@ -14,6 +14,7 @@ async def test_shortterm_every_poll_rest_every_30_min() -> None:
         "_fetch_forecast",
         "_fetch_sun",
         "_fetch_alerts",
+        "_fetch_open_meteo_hourly",
         "_fetch_shortterm_alerts",
         "_fetch_nationwide_shortterm_alerts",
     ):
@@ -30,3 +31,4 @@ async def test_shortterm_every_poll_rest_every_30_min() -> None:
     # Minute 0 and minute ~30 (slightly early still counts).
     assert data._fetch_forecast.await_count == 2
     assert data._fetch_alerts.await_count == 2
+    assert data._fetch_open_meteo_hourly.await_count == 2

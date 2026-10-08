@@ -1,12 +1,16 @@
 """Weather platform for SMN."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any
 
 from homeassistant.components.weather import (
     ATTR_CONDITION_CLEAR_NIGHT,
+    ATTR_CONDITION_CLOUDY,
+    ATTR_CONDITION_PARTLYCLOUDY,
+    ATTR_CONDITION_POURING,
+    ATTR_CONDITION_RAINY,
     ATTR_CONDITION_SUNNY,
     Forecast,
     WeatherEntity,
@@ -31,6 +35,10 @@ from .const import (
     CONDITION_ID_MAP,
     DOMAIN,
     FORECAST_MAP,
+    NEXT_RAIN_HOURLY_MIN_PRECIPITATION,
+    NEXT_RAIN_HOURLY_PROBABILITY,
+    OPEN_METEO_ATTRIBUTION,
+    WMO_CONDITION_MAP,
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 
@@ -83,12 +91,51 @@ async def async_setup_entry(
     async_add_entities([ArgentinaSMNWeather(coordinator, config_entry)], False)
 
 
+def open_meteo_hourly_forecast(
+    hourly: list[dict[str, Any]], now: datetime | None = None
+) -> list[Forecast]:
+    """Open-Meteo's hourly entries (coordinator.open_meteo_hourly) from the current hour on."""
+    now = now or datetime.now(timezone.utc)
+    forecasts: list[Forecast] = []
+    for hour in hourly:
+        if hour["when"] + timedelta(hours=1) <= now:
+            continue
+        condition = WMO_CONDITION_MAP.get(hour.get("weather_code"))
+        if (
+            condition in (ATTR_CONDITION_RAINY, ATTR_CONDITION_POURING)
+            and (hour.get("probability") or 0) < NEXT_RAIN_HOURLY_PROBABILITY
+            and (hour.get("precipitation") or 0) < NEXT_RAIN_HOURLY_MIN_PRECIPITATION
+        ):
+            # The model's "drizzle" with a trace and a low probability: show
+            # the clouds instead of a rainy hour.
+            cloud_cover = hour.get("cloud_coverage") or 0
+            condition = ATTR_CONDITION_CLOUDY if cloud_cover >= 70 else ATTR_CONDITION_PARTLYCLOUDY
+        if condition == ATTR_CONDITION_SUNNY and hour.get("is_day") == 0:
+            condition = ATTR_CONDITION_CLEAR_NIGHT
+        forecasts.append(
+            Forecast(
+                datetime=hour["when"].isoformat(),
+                condition=condition,
+                native_temperature=hour.get("temperature"),
+                native_apparent_temperature=hour.get("apparent_temperature"),
+                humidity=hour.get("humidity"),
+                native_precipitation=hour.get("precipitation"),
+                precipitation_probability=hour.get("probability"),
+                native_wind_speed=hour.get("wind_speed"),
+                native_wind_gust_speed=hour.get("wind_gust_speed"),
+                wind_bearing=hour.get("wind_bearing"),
+                cloud_coverage=hour.get("cloud_coverage"),
+            )
+        )
+    return forecasts
+
+
 class ArgentinaSMNWeather(
     CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], WeatherEntity
 ):
     """Implementation of an SMN weather entity."""
 
-    _attr_attribution = "Data provided by Servicio Meteorológico Nacional Argentina"
+    _smn_attribution = "Data provided by Servicio Meteorológico Nacional Argentina"
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_pressure_unit = UnitOfPressure.HPA
@@ -108,6 +155,13 @@ class ArgentinaSMNWeather(
         # The device's main entity: named just like the device (has_entity_name).
         self._attr_name = None
         self._attr_unique_id = f"{config_entry.entry_id}"
+
+    @property
+    def attribution(self) -> str:
+        """SMN's, plus Open-Meteo's while it provides the hourly forecast."""
+        if self.coordinator.data.open_meteo_hourly:
+            return f"{self._smn_attribution} · {OPEN_METEO_ATTRIBUTION}"
+        return self._smn_attribution
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -245,8 +299,15 @@ class ArgentinaSMNWeather(
         return self._format_forecast(self.coordinator.data.daily_forecast, is_daily=True)
 
     async def async_forecast_hourly(self) -> list[Forecast] | None:
-        """Return the hourly forecast."""
-        return self._format_forecast(self.coordinator.data.hourly_forecast, is_daily=False)
+        """Return the hourly forecast: Open-Meteo's, hour by hour.
+
+        SMN's own only comes in 6-hour periods (00/06/12/18), so it's the
+        fallback when Open-Meteo couldn't be fetched.
+        """
+        data = self.coordinator.data
+        if data.open_meteo_hourly:
+            return open_meteo_hourly_forecast(data.open_meteo_hourly)
+        return self._format_forecast(data.hourly_forecast, is_daily=False)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

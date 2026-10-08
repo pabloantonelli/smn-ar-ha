@@ -127,3 +127,109 @@ async def test_entity_attributes(hass, enable_custom_integrations, freezer) -> N
     assert state.attributes["en_curso"] is False
     assert state.attributes["proxima_tormenta"] == "2026-10-07T18:00:00-03:00"
     assert "30 km" in state.attributes["criterio"]
+
+
+def _hour(hour: int, probability: int, precipitation: float = 1.0, code: int = 61) -> dict:
+    return {
+        "when": datetime(2026, 10, 7, hour, 0, tzinfo=ARG),
+        "probability": probability,
+        "precipitation": precipitation,
+        "weather_code": code,
+        "wind_speed_700hpa": 40,
+        "wind_direction_700hpa": 270,  # from the W: storms move east
+    }
+
+
+def _find_with(hourly=(), alerts=None, avisos=None, radius=30, open_meteo_hourly=None, nowcast=None):
+    return find_next_rain_or_storm(
+        list(hourly), alerts, avisos, LAT, LON, radius, NOW,
+        open_meteo_hourly=open_meteo_hourly, nowcast=nowcast,
+    )
+
+
+def test_low_probability_range_no_longer_counts() -> None:
+    assert _find([_period("12:00", 73, [10, 30])]) == (None, None)
+
+
+def test_hourly_forecast_refines_the_smn_period() -> None:
+    open_meteo_hourly = [_hour(h, 5, 0.0) for h in range(8, 15)] + [_hour(15, 30, 0.3)]
+    next_any, _ = _find_with([_period("12:00", 73, [40, 70])], open_meteo_hourly=open_meteo_hourly)
+    assert next_any["source"][1] == "pronóstico"
+    assert next_any["when"] == datetime(2026, 10, 7, 15, 0, tzinfo=ARG)
+    assert next_any["probability"] == 70  # still the SMN period's
+
+
+def test_hourly_forecast_alone() -> None:
+    open_meteo_hourly = [_hour(9, 10, 0.0), _hour(10, 60, 2.0), _hour(11, 50, 1.0, code=95)]
+    next_any, next_storm = _find_with(open_meteo_hourly=open_meteo_hourly)
+    assert next_any["source"][1] == "pronóstico horario"
+    assert next_any["when"] == datetime(2026, 10, 7, 10, 0, tzinfo=ARG)
+    assert next_storm["when"] == datetime(2026, 10, 7, 11, 0, tzinfo=ARG)
+
+
+def test_nowcast_wins_with_its_details() -> None:
+    from custom_components.smn_ar.nowcast import SOURCE_SATELLITE, Motion, Nowcast
+
+    nowcast = Nowcast(
+        source=SOURCE_SATELLITE,
+        frame_time=NOW - timedelta(minutes=20),
+        horizon_end=NOW + timedelta(minutes=100),
+        motion=Motion(45, 120, SOURCE_SATELLITE),
+        arrival=NOW + timedelta(minutes=35),
+        until=NOW + timedelta(minutes=80),
+        tipo="tormenta",
+        intensity=-64,
+        distance_km=41,
+        from_deg=300,
+    )
+    next_any, next_storm = _find_with([_period("12:00", 89, [40, 70])], nowcast=nowcast)
+    assert next_any is next_storm
+    assert next_any["source"][1] == "satélite infrarrojo"
+    assert next_any["when"] == NOW + timedelta(minutes=35)
+    assert next_any["direction"] == "WNW"
+    assert next_any["motion"].speed_kmh == 45
+
+
+def test_aviso_carried_by_the_wind() -> None:
+    # The aviso's area is ~20 km S of the location: storms moving east miss it.
+    open_meteo_hourly = [_hour(h, 0, 0.0) for h in range(6, 12)]
+    next_any, _ = _find_with(avisos=[STORM_AVISO_20KM], open_meteo_hourly=open_meteo_hourly)
+    assert next_any is None
+    # Moving north (wind from the S), it gets here ~30 min after it was issued.
+    for hour in open_meteo_hourly:
+        hour["wind_direction_700hpa"] = 180
+    next_any, _ = _find_with(avisos=[STORM_AVISO_20KM], open_meteo_hourly=open_meteo_hourly)
+    assert next_any["source"][1] == "aviso cercano"
+    issued = datetime(2026, 10, 7, 7, 30, tzinfo=ARG)
+    assert issued + timedelta(minutes=15) <= next_any["when"] <= issued + timedelta(minutes=40)
+
+
+def test_radar_overrides_forecasts_within_its_horizon() -> None:
+    from custom_components.smn_ar.nowcast import SOURCE_RADAR, Nowcast
+
+    horizon_end = NOW + timedelta(minutes=100)
+    dry_radar = Nowcast(source=SOURCE_RADAR, frame_time=NOW - timedelta(minutes=20), horizon_end=horizon_end, motion=None)
+    open_meteo_hourly = [_hour(8, 80, 3.0, code=95)]
+    next_any, _ = _find_with(open_meteo_hourly=open_meteo_hourly, nowcast=dry_radar)
+    assert next_any["when"] == horizon_end
+    assert next_any["source"][1] == "pronóstico horario"
+
+
+def test_stale_or_finished_nowcast_is_ignored() -> None:
+    from custom_components.smn_ar.nowcast import SOURCE_SATELLITE, Nowcast
+
+    def nowcast(frame_age: int, until: int | None = None) -> Nowcast:
+        frame_time = NOW - timedelta(minutes=frame_age)
+        return Nowcast(
+            source=SOURCE_SATELLITE,
+            frame_time=frame_time,
+            horizon_end=frame_time + timedelta(minutes=120),
+            motion=None,
+            arrival=frame_time,
+            until=None if until is None else NOW + timedelta(minutes=until),
+            tipo="lluvia",
+        )
+
+    assert _find_with(nowcast=nowcast(30))[0]["source"][1] == "satélite infrarrojo"
+    assert _find_with(nowcast=nowcast(180)) == (None, None)  # the source kept failing
+    assert _find_with(nowcast=nowcast(30, until=-5)) == (None, None)  # already went past

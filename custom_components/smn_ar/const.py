@@ -105,6 +105,63 @@ CONDITION_LABELS_ES: Final = {
     ATTR_CONDITION_WINDY: "Ventoso",
 }
 
+# Hourly forecast from Open-Meteo (open-meteo.com, free, no key, CC BY 4.0):
+# SMN's own forecast only comes in 6-hour periods, too coarse for the
+# weather entity's hourly forecast or to say when rain starts. Also gives
+# the 700 hPa wind, the steering flow storms move with (the nowcast's
+# fallback motion). Not through the proxy either.
+OPEN_METEO_URL: Final = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_FORECAST_DAYS: Final = 3
+OPEN_METEO_ATTRIBUTION: Final = "Hourly forecast by Open-Meteo.com"
+# Our key in each hourly entry -> Open-Meteo's hourly variable.
+OPEN_METEO_HOURLY_FIELDS: Final = {
+    "probability": "precipitation_probability",
+    "precipitation": "precipitation",
+    "weather_code": "weather_code",
+    "is_day": "is_day",
+    "temperature": "temperature_2m",
+    "apparent_temperature": "apparent_temperature",
+    "humidity": "relative_humidity_2m",
+    "wind_speed": "wind_speed_10m",
+    "wind_gust_speed": "wind_gusts_10m",
+    "wind_bearing": "wind_direction_10m",
+    "cloud_coverage": "cloud_cover",
+    "wind_speed_700hpa": "wind_speed_700hPa",
+    "wind_direction_700hpa": "wind_direction_700hPa",
+}
+# WMO weather code (Open-Meteo's weather_code) -> HA condition. Clear sky
+# at night becomes clear-night in weather.py (with Open-Meteo's is_day).
+WMO_CONDITION_MAP: Final = {
+    0: ATTR_CONDITION_SUNNY,
+    1: ATTR_CONDITION_PARTLYCLOUDY,
+    2: ATTR_CONDITION_PARTLYCLOUDY,
+    3: ATTR_CONDITION_CLOUDY,
+    45: ATTR_CONDITION_FOG,
+    48: ATTR_CONDITION_FOG,
+    51: ATTR_CONDITION_RAINY,
+    53: ATTR_CONDITION_RAINY,
+    55: ATTR_CONDITION_RAINY,
+    56: ATTR_CONDITION_SNOWY_RAINY,
+    57: ATTR_CONDITION_SNOWY_RAINY,
+    61: ATTR_CONDITION_RAINY,
+    63: ATTR_CONDITION_RAINY,
+    65: ATTR_CONDITION_POURING,
+    66: ATTR_CONDITION_SNOWY_RAINY,
+    67: ATTR_CONDITION_SNOWY_RAINY,
+    71: ATTR_CONDITION_SNOWY,
+    73: ATTR_CONDITION_SNOWY,
+    75: ATTR_CONDITION_SNOWY,
+    77: ATTR_CONDITION_SNOWY,
+    80: ATTR_CONDITION_RAINY,
+    81: ATTR_CONDITION_RAINY,
+    82: ATTR_CONDITION_POURING,
+    85: ATTR_CONDITION_SNOWY,
+    86: ATTR_CONDITION_SNOWY,
+    95: ATTR_CONDITION_LIGHTNING_RAINY,
+    96: ATTR_CONDITION_LIGHTNING_RAINY,
+    99: ATTR_CONDITION_LIGHTNING_RAINY,
+}
+
 RADAR_ZOOM: Final = 9
 RADAR_TILE_GRID: Final = 5  # 5x5 tiles around the configured location (~300km across)
 RADAR_TILE_SIZE: Final = 256
@@ -307,7 +364,27 @@ WIND_CARDINAL_DIRECTIONS: Final = [
 ]
 
 
-NEXT_RAIN_PROBABILITY_THRESHOLD: Final = 30  # % — minimum rain_prob_range max to count
+# % — minimum middle of SMN's rain_prob_range for a forecast period to count
+# (the top of the range is too optimistic: "10-30%" rarely rains).
+NEXT_RAIN_PROBABILITY_THRESHOLD: Final = 40
+# Open-Meteo's hourly forecast (see OPEN_METEO_URL): an hour counts as rain
+# with this probability and amount, or as a storm (weather code 95-99) with
+# NEXT_RAIN_HOURLY_STORM_PROBABILITY.
+NEXT_RAIN_HOURLY_PROBABILITY: Final = 40  # %
+NEXT_RAIN_HOURLY_MIN_PRECIPITATION: Final = 0.2  # mm
+NEXT_RAIN_HOURLY_STORM_PROBABILITY: Final = 30  # %
+# Within an SMN period or zone alert that already says rain, the first hour
+# Open-Meteo gives at least this much is taken as when it starts.
+NEXT_RAIN_REFINE_PROBABILITY: Final = 20  # %
+
+# Nowcast (nowcast.py): how far ahead it extrapolates the radar/infrared,
+# how far around the location it looks, and how close counts as "here".
+NOWCAST_HORIZON_MINUTES: Final = 120
+NOWCAST_AREA_RADIUS_KM: Final = 220
+NOWCAST_LOCATION_RADIUS_KM: Final = 5
+NOWCAST_UPDATE_INTERVAL: Final = 600  # 10 min, the infrared/radar cadence
+# Frames older than this don't count (SINARAME's arrive ~25-35 min late).
+NOWCAST_MAX_AGE_MINUTES: Final = 75
 
 
 def wind_cardinal(degrees: float | int | None) -> str | None:

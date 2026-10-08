@@ -43,10 +43,15 @@ from .const import (
     ALERT_EVENT_NEARBY_KEYWORDS,
     ALERT_LEVEL_MAP,
     DOMAIN,
+    NEXT_RAIN_HOURLY_MIN_PRECIPITATION,
+    NEXT_RAIN_HOURLY_PROBABILITY,
+    NEXT_RAIN_HOURLY_STORM_PROBABILITY,
     NEXT_RAIN_PROBABILITY_THRESHOLD,
+    NEXT_RAIN_REFINE_PROBABILITY,
     wind_cardinal,
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
+from .nowcast import SOURCE_RADAR, Nowcast, aviso_arrival, steering_motion
 from .weather import format_condition
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,10 +82,13 @@ _RAIN_OR_STORM_KEYWORDS = (
     ALERT_EVENT_NEARBY_KEYWORDS["tormenta"][0] + ALERT_EVENT_NEARBY_KEYWORDS["lluvia"][0],
     (),
 )
-# Source strength, used to break ties within the same period.
-_SOURCE_AVISO = (3, "aviso cercano")
-_SOURCE_ALERT = (2, "alerta de zona")
+# Source strength, used to break ties at the same time.
+_SOURCE_AVISO = (4, "aviso cercano")
+_SOURCE_ALERT = (3, "alerta de zona")
+_SOURCE_HOURLY = (2, "pronóstico horario")
 _SOURCE_FORECAST = (1, "pronóstico")
+_NOWCAST_STRENGTH = 5  # the nowcast's own source name (radar / satélite) goes with it
+_PERIOD = timedelta(hours=6)
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -88,6 +96,22 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value) if value else None
     except ValueError:
         return None
+
+
+def _period_start(when: datetime) -> datetime:
+    """Start of the SMN period (00/06/12/18 Argentina time) `when` falls in."""
+    local = when.astimezone(_ARG_TZ)
+    return local.replace(hour=local.hour // 6 * 6, minute=0, second=0, microsecond=0)
+
+
+def _hourly_is_rain(hour: dict[str, Any]) -> str | None:
+    """Whether an Open-Meteo hour counts as "tormenta", "lluvia" or neither (None)."""
+    probability = hour.get("probability") or 0
+    if (hour.get("weather_code") or 0) >= 95 and probability >= NEXT_RAIN_HOURLY_STORM_PROBABILITY:
+        return "tormenta"
+    if probability >= NEXT_RAIN_HOURLY_PROBABILITY and (hour.get("precipitation") or 0) >= NEXT_RAIN_HOURLY_MIN_PRECIPITATION:
+        return "lluvia"
+    return None
 
 
 def find_next_rain_or_storm(
@@ -98,28 +122,74 @@ def find_next_rain_or_storm(
     longitude: float,
     radius_km: float,
     now: datetime | None = None,
+    open_meteo_hourly: list[dict[str, Any]] | None = None,
+    nowcast: Nowcast | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(next rain or storm, next storm) combining SMN's three sources.
+    """(next rain or storm, next storm) combining every source, most precise first.
 
-    Candidates, each with `when`, `tipo` ("lluvia"/"tormenta") and `fuente`:
-    - a rain/storm aviso a muy corto plazo within the radius (happening now
-      nearby; `when` is when it was issued),
-    - a rain/storm alert for the location's zone, per period (today and the
-      next couple of days),
-    - the location's forecast periods with rain likely (NEXT_RAIN_PROBABILITY
-      _THRESHOLD) or a storm condition, even with a low rain probability.
-    The earliest wins; anything already under way counts as "now", and ties
-    go to the stronger source (aviso > zone alert > forecast).
+    Candidates, each with `when`, `tipo` ("lluvia"/"tormenta") and `source`:
+    - the nowcast (nowcast.py): the radar or infrared echoes extrapolated
+      along their motion, to the minute, up to 2h ahead,
+    - a rain/storm aviso a muy corto plazo within the radius: when its area,
+      moving like the storms do, reaches the location (right away if it's
+      already inside; one that moves past is dropped). Without a motion,
+      when it was issued, as if it were already here,
+    - a rain/storm alert for the location's zone, per period,
+    - Open-Meteo's hourly forecast: an hour with rain likely, or a storm,
+    - SMN's forecast periods with rain likely (the middle of its
+      probability range at NEXT_RAIN_PROBABILITY_THRESHOLD or more) or a
+      storm condition, even with a low probability.
+    SMN's periods and zone alerts are 6 hours long: within one, the first
+    hour Open-Meteo gives some rain is taken as when it starts, instead of
+    the start of the period. Where there's radar, the forecasts and zone
+    alerts only count past its horizon. The earliest wins; anything already
+    under way counts as "now", and ties go to the stronger source.
     """
     now = now or datetime.now(_ARG_TZ)
+    open_meteo_hourly = open_meteo_hourly or []
+    if nowcast is not None and not nowcast.is_current(now):
+        nowcast = None
+    motion = (nowcast.motion if nowcast else None) or steering_motion(open_meteo_hourly, now)
     candidates: list[dict[str, Any]] = []
+
+    def refine(start: datetime) -> datetime:
+        """First not-yet-past hour of a 6-hour period Open-Meteo gives some rain in, or its start."""
+        for hour in open_meteo_hourly:
+            if (
+                start <= hour["when"] < start + _PERIOD
+                and hour["when"] + timedelta(hours=1) > now
+                and (
+                    (hour.get("probability") or 0) >= NEXT_RAIN_REFINE_PROBABILITY
+                    or (hour.get("precipitation") or 0) >= 0.1
+                )
+            ):
+                return hour["when"]
+        return start
+
+    if nowcast is not None and nowcast.arrival is not None:
+        candidates.append(
+            {
+                "when": nowcast.arrival,
+                "tipo": nowcast.tipo,
+                "source": (_NOWCAST_STRENGTH, nowcast.source),
+                "until": nowcast.until,
+                "distance_km": nowcast.distance_km,
+                "direction": wind_cardinal(nowcast.from_deg),
+                "intensity": nowcast.intensity,
+            }
+        )
 
     for distance, bearing, aviso in ranked_avisos(latitude, longitude, avisos, _RAIN_OR_STORM_KEYWORDS):
         if distance > radius_km:
             continue
+        when = _parse_iso(aviso.get("date")) or now
+        if distance > 0 and motion is not None:
+            when = aviso_arrival(latitude, longitude, aviso, when, motion)
+            if when is None:
+                continue
         candidates.append(
             {
-                "when": _parse_iso(aviso.get("date")) or now,
+                "when": when,
                 "tipo": "tormenta" if aviso_matches(aviso, _STORM_KEYWORDS) else "lluvia",
                 "source": _SOURCE_AVISO,
                 "distance_km": round(distance, 1),
@@ -133,7 +203,7 @@ def find_next_rain_or_storm(
         for start, level in alert_periods(alerts, event_id, now):
             candidates.append(
                 {
-                    "when": start,
+                    "when": refine(start),
                     "tipo": tipo,
                     "source": _SOURCE_ALERT,
                     "level": level,
@@ -141,23 +211,44 @@ def find_next_rain_or_storm(
                 }
             )
 
-    forecast_by_time: dict[datetime, dict[str, Any]] = {}
+    # The first hour with rain or a storm, and the first one with a storm.
+    upcoming = [h for h in open_meteo_hourly if h["when"] + timedelta(hours=1) > now and _hourly_is_rain(h)]
+    for hour in upcoming[:1] + [h for h in upcoming if _hourly_is_rain(h) == "tormenta"][:1]:
+        candidates.append(
+            {
+                "when": hour["when"],
+                "tipo": _hourly_is_rain(hour),
+                "source": _SOURCE_HOURLY,
+                "hourly_probability": hour.get("probability"),
+            }
+        )
+
+    forecast_by_period: dict[datetime, dict[str, Any]] = {}
     for period in hourly_forecast:
         when = _parse_period_datetime(period.get("date"), period.get("time"))
         if when is None:
             continue
         rain_prob_range = period.get("rain_prob_range")
         probability = max(rain_prob_range) if rain_prob_range else None
+        likelihood = sum(rain_prob_range) / len(rain_prob_range) if rain_prob_range else None
         condition = format_condition(period.get("weather"))
-        forecast_by_time[when] = {"probability": probability, "condition": condition}
-        if when < now:
+        forecast_by_period[when] = {"probability": probability, "condition": condition}
+        if when + _PERIOD <= now:
             continue
         storm = condition == ATTR_CONDITION_LIGHTNING_RAINY
-        if not storm and (probability is None or probability < NEXT_RAIN_PROBABILITY_THRESHOLD):
+        if not storm and (likelihood is None or likelihood < NEXT_RAIN_PROBABILITY_THRESHOLD):
             continue
         candidates.append(
-            {"when": when, "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST}
+            {"when": refine(when), "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST}
         )
+
+    if nowcast is not None and nowcast.source.startswith(SOURCE_RADAR):
+        # The radar sees the rain itself: within its horizon, a forecast
+        # saying otherwise is the one that's off (radar coverage was checked
+        # before fetching it). Past the horizon, the forecasts take over.
+        for candidate in candidates:
+            if candidate["source"][0] <= _SOURCE_ALERT[0] and candidate["when"] < nowcast.horizon_end:
+                candidate["when"] = nowcast.horizon_end
 
     def sort_key(candidate: dict[str, Any]) -> tuple[datetime, int, int]:
         return (
@@ -168,8 +259,10 @@ def find_next_rain_or_storm(
 
     candidates.sort(key=sort_key)
     for candidate in candidates:
-        # Rain probability/condition the forecast gives for the same period.
-        candidate.update(forecast_by_time.get(candidate["when"], {}))
+        # Rain probability/condition SMN's forecast gives for the same period.
+        candidate.update(forecast_by_period.get(_period_start(candidate["when"]), {}))
+        if motion is not None:
+            candidate["motion"] = motion
     next_any = candidates[0] if candidates else None
     next_storm = next((c for c in candidates if c["tipo"] == "tormenta"), None)
     return next_any, next_storm
@@ -531,12 +624,13 @@ class SMNTomorrowForecastSensor(_SMNDailyForecastSensor):
 class SMNNextRainSensor(_SMNSensorBase):
     """Próxima lluvia o tormenta: when the next rain or storm is expected.
 
-    Combines a nearby aviso, the zone's rain/storm alerts by period and the
-    location's forecast (see find_next_rain_or_storm). State is a timestamp
-    (device_class TIMESTAMP), so a dashboard shows it as "en 3 horas" and
-    it's directly usable in automation triggers/conditions. `tipo` tells
-    rain and storm apart; `proxima_tormenta` keeps the next storm even when
-    rain comes first. `None` means nothing is forecast in SMN's horizon.
+    Combines the nowcast, a nearby aviso, the zone's rain/storm alerts by
+    period and the forecasts (see find_next_rain_or_storm). State is a
+    timestamp (device_class TIMESTAMP), so a dashboard shows it as "en 3
+    horas" and it's directly usable in automation triggers/conditions.
+    `tipo` tells rain and storm apart; `proxima_tormenta` keeps the next
+    storm even when rain comes first. `None` means nothing is forecast in
+    any source's horizon.
     """
 
     _attr_translation_key = "next_rain"
@@ -546,12 +640,20 @@ class SMNNextRainSensor(_SMNSensorBase):
     def __init__(self, coordinator, config_entry) -> None:
         super().__init__(coordinator, config_entry, "_next_rain")
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self.coordinator.nowcast is not None:
+            self.async_on_remove(
+                self.coordinator.nowcast.async_add_listener(self._handle_coordinator_update)
+            )
+
     @property
     def _radius_km(self) -> float:
         return get_alert_radius_km(self._config_entry)
 
     def _find(self) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         data = self.coordinator.data
+        nowcast = self.coordinator.nowcast
         return find_next_rain_or_storm(
             data.hourly_forecast,
             data.alerts,
@@ -559,6 +661,8 @@ class SMNNextRainSensor(_SMNSensorBase):
             self._config_entry.data[CONF_LATITUDE],
             self._config_entry.data[CONF_LONGITUDE],
             self._radius_km,
+            open_meteo_hourly=data.open_meteo_hourly,
+            nowcast=nowcast.data if nowcast is not None else None,
         )
 
     @property
@@ -576,9 +680,11 @@ class SMNNextRainSensor(_SMNSensorBase):
         next_any, next_storm = self._find()
         attrs: dict[str, Any] = {
             "criterio": (
-                "Lo más próximo entre: un aviso a corto plazo de lluvia o tormenta a menos de "
-                f"{self._radius_km:g} km, una alerta de lluvia o tormenta para tu zona y el "
-                f"pronóstico de tu localidad (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% "
+                "Lo más próximo entre: la lluvia o tormenta que el radar (SINARAME o "
+                "RainViewer) o el satélite infrarrojo ven acercarse (hasta 2 horas), un aviso a corto plazo de lluvia o "
+                f"tormenta a menos de {self._radius_km:g} km que se mueve hacia tu ubicación, "
+                "una alerta de lluvia o tormenta para tu zona, el pronóstico horario de "
+                f"Open-Meteo y el pronóstico del SMN (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% "
                 "o más de probabilidad, o tormenta)"
             ),
             "rain_expected": next_any is not None,
@@ -586,20 +692,38 @@ class SMNNextRainSensor(_SMNSensorBase):
         }
         if next_any is None:
             return attrs
+        now = datetime.now(_ARG_TZ)
         attrs.update(
             {
                 "tipo": next_any["tipo"],
                 "fuente": next_any["source"][1],
                 # Already under way (a current aviso or period): the state is
                 # when it started, so it reads "hace X" on a dashboard.
-                "en_curso": next_any["when"] <= datetime.now(_ARG_TZ),
+                "en_curso": next_any["when"] <= now,
+                "minutos": max(0, round((next_any["when"] - now).total_seconds() / 60)),
                 "probability": next_any.get("probability"),
                 "condition": next_any.get("condition"),
             }
         )
-        for key in ("level", "level_name", "distance_km", "direction", "title", "end_date"):
-            if key in next_any:
+        for key in (
+            "level",
+            "level_name",
+            "distance_km",
+            "direction",
+            "title",
+            "end_date",
+            "intensity",
+            "hourly_probability",
+        ):
+            if next_any.get(key) is not None:
                 attrs[key] = next_any[key]
+        if next_any.get("until") is not None:
+            attrs["hasta"] = next_any["until"].isoformat()
+        motion = next_any.get("motion")
+        if motion is not None:
+            attrs["velocidad_kmh"] = motion.speed_kmh
+            attrs["se_mueve_hacia"] = wind_cardinal(motion.toward_deg)
+            attrs["movimiento_segun"] = motion.source
         return attrs
 
 

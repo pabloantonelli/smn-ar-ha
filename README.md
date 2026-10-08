@@ -50,7 +50,7 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 
 | Nombre | Qué muestra |
 |---|---|
-| Clima (`weather`) | Clima actual y pronóstico de 7 días por franja (madrugada, mañana, tarde y noche) |
+| Clima (`weather`) | Clima actual y pronóstico de 7 días del SMN. El pronóstico **por hora** es de [Open-Meteo](https://open-meteo.com) (3 días), porque el del SMN viene en franjas de 6 horas; si Open-Meteo no responde, vuelven las franjas del SMN |
 | Temperatura, Sensación térmica, Humedad, Velocidad y Dirección del viento | Los valores actuales, como sensores sueltos para gráficos y automatizaciones |
 | Pronóstico de hoy / de mañana | Condición, máxima y mínima |
 | Próxima lluvia o tormenta | Cuándo es la próxima lluvia o tormenta ([cómo se calcula](#próxima-lluvia-o-tormenta)) |
@@ -69,7 +69,8 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 ### Actualización
 
 - **Avisos a corto plazo**: cada 10 min.
-- **Clima, pronóstico y alertas de zona**: cada 30 min.
+- **Clima, pronóstico (SMN y Open-Meteo) y alertas de zona**: cada 30 min.
+- **Próxima lluvia (radar o satélite)**: cada 10 min.
 - **Radar y mapa de avisos**: cada 10 min, y al instante cuando aparece o termina un aviso (así la imagen que mandás en una notificación ya trae el polígono).
 - **Satélite**: cada 20 min.
 
@@ -111,25 +112,57 @@ meteorológica"):
 
 ## Próxima lluvia o tormenta
 
-El estado es un horario: Home Assistant lo muestra como "en 3 horas" y queda
-vacío si no hay nada pronosticado. Se queda con lo más próximo de tres
+El estado es un horario: Home Assistant lo muestra como "en 40 minutos" y
+queda vacío si no hay nada a la vista. Se queda con lo más próximo de cinco
 fuentes:
 
-1. **Aviso cercano**: un aviso de lluvia o tormenta dentro del radio.
-2. **Alerta de zona**: de lluvia o tormenta, por franja, para hoy y los
+1. **Radar o satélite (nowcast)**: toma las últimas imágenes alrededor de tu
+   ubicación, calcula hacia dónde y a qué velocidad se mueven las celdas, y
+   las proyecta hasta 2 horas adelante. Da la hora con precisión de minutos.
+   - **Radar del SINARAME**, la red nacional de radares (Ezeiza, Córdoba,
+     Resistencia, Mar del Plata, Bahía Blanca y otros), si hay uno a menos de
+     180 km. Ve la lluvia en sí. Sale del visor público de Recursos Hídricos
+     (radares.hidricosargentina.gob.ar), que publica cada 10 minutos con unos
+     25 de atraso. Esas imágenes traen artefactos (barridos con anillos,
+     interferencias), así que se descartan los frames rotos y no se cuenta
+     lluvia donde el satélite no ve nubes. Si el radar más cercano no sirve,
+     prueba con el siguiente.
+   - **Radar de RainViewer** donde no llega el SINARAME y RainViewer tiene
+     cobertura (casi sólo el litoral del río Uruguay).
+   - **Satélite infrarrojo** (GOES-East) en el resto del país. Ve los topes
+     fríos de las tormentas (-52 °C o menos), pero no la lluvia débil de
+     nubes más bajas ni una tormenta que todavía no se formó: para eso
+     quedan los pronósticos.
+   - Si las imágenes no alcanzan para medir el movimiento, o el satélite
+     sigue al yunque de la tormenta en vez de a la lluvia, usa el viento en
+     700 hPa, que es el que arrastra las tormentas.
+2. **Aviso cercano**: un aviso de lluvia o tormenta dentro del radio. Su
+   zona se mueve con las tormentas: cuenta cuando llega a tu ubicación, y
+   uno que pasa de largo no cuenta.
+3. **Alerta de zona**: de lluvia o tormenta, por franja, para hoy y los
    próximos días.
-3. **Pronóstico** de tu localidad: una franja con 30% o más de probabilidad
-   de lluvia, o con tormenta aunque la probabilidad sea baja.
+4. **Pronóstico horario** de [Open-Meteo](https://open-meteo.com): una hora
+   con 40% o más de probabilidad y al menos 0,2 mm, o con tormenta.
+5. **Pronóstico del SMN** de tu localidad: una franja con lluvia probable
+   (el medio del rango de probabilidad en 40% o más; "10–30%" no cuenta) o
+   con tormenta aunque la probabilidad sea baja.
 
-Si dos coinciden en la misma franja, gana la más fuerte: primero el aviso,
-después la alerta y después el pronóstico.
+Las franjas del SMN y las alertas duran 6 horas: dentro de una, se toma la
+primera hora en que Open-Meteo da algo de lluvia, en vez del comienzo de la
+franja. Donde hay radar, lo que ve el radar manda en sus 2 horas.
 
 Atributos principales:
 
 - **`tipo`**: `lluvia` o `tormenta`.
-- **`fuente`**: de cuál de las tres fuentes salió.
+- **`fuente`**: `radar SINARAME <radar>`, `radar`, `satélite infrarrojo`,
+  `aviso cercano`, `alerta de zona`, `pronóstico horario` o `pronóstico`.
+- **`minutos`**: cuánto falta.
 - **`en_curso`**: `true` si ya empezó. En ese caso el estado se ve como
   "hace X".
+- **`distance_km`** / **`direction`**: a qué distancia está y de dónde viene.
+- **`hasta`**: cuándo termina de pasar, si es dentro de las 2 horas.
+- **`velocidad_kmh`** / **`se_mueve_hacia`** / **`movimiento_segun`**: cómo se
+  mueven las tormentas y de dónde salió ese dato.
 - **`proxima_tormenta`**: la próxima tormenta, aunque antes venga lluvia.
 
 ## Automatizaciones
@@ -189,8 +222,10 @@ show_updated: true        # hora de la última actualización
   local. Ver su [README](addons/smn_proxy/README.md).
 - **Qué hace la integración** (`custom_components/smn_ar`): sólo habla con
   ese proxy.
-- **Otras fuentes**: el radar viene de RainViewer, el satélite de NASA GIBS
-  (GOES-East) y los mapas base de OpenStreetMap. No pasan por el proxy.
+- **Otras fuentes**: el radar viene de RainViewer y del SINARAME (visor de
+  radares de Recursos Hídricos), el satélite de NASA GIBS (GOES-East), el
+  pronóstico horario de Open-Meteo y los mapas base de OpenStreetMap. No
+  pasan por el proxy.
 
 ## Créditos
 
