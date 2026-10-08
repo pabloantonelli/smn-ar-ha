@@ -1,12 +1,15 @@
-"""Precipitation radar animation built from RainViewer's public tile API.
+"""The "Radar" camera: storm clouds around the location, plus the radar tile helpers.
 
-Not sourced from SMN: see the note in const.py for why. This module fetches
-the last RADAR_ANIMATION_FRAMES radar frames as a small tile mosaic around a
-lat/lon, with the infrared satellite's cold cloud tops underneath (RainViewer's
-Argentina coverage is thin, so it often misses storms the satellite sees),
-and draws SMN's own active alert zones and a short weather/forecast caption
-on top. camera.py encodes the frames like the satellite cameras: a GIF as
-the camera image and an MP4 for the dashboard card.
+The camera shows the infrared satellite's cold cloud tops over the last
+RADAR_ANIMATION_FRAMES 10-min slots, as a small map mosaic around a lat/lon,
+with SMN's own active alert zones and a short weather/forecast caption on
+top. camera.py encodes the frames like the satellite cameras: a GIF as the
+camera image and an MP4 for the dashboard card.
+
+It used to draw the precipitation radar (RainViewer, then SINARAME) too,
+but next to the infrared it muddled the map; the radars now only feed the
+next-rain nowcast (nowcast.py), which also uses this module's RainViewer
+helpers (_fetch_frame_paths, _fetch_tile).
 
 Fetching (fetch_radar_layers) and drawing (render_radar_frames) are split
 so a change in the avisos only redraws the frames, without fetching again.
@@ -18,7 +21,7 @@ import io
 import logging
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -33,14 +36,11 @@ from .const import (
     BASEMAP_USER_AGENT,
     CONDITION_ID_MAP,
     CONDITION_LABELS_ES,
-    GIBS_MAX_ZOOM_INFRARED,
     RADAR_ANIMATION_FRAMES,
-    RADAR_COLOR_SCHEME,
     RADAR_TILE_GRID,
     RADAR_TILE_SIZE,
     RADAR_ZOOM,
     RAINVIEWER_INDEX_URL,
-    RAINVIEWER_MAX_ZOOM,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -525,98 +525,12 @@ async def _fetch_basemap_mosaic(
     return mosaic
 
 
-async def _fetch_radar_layer(
-    session: aiohttp.ClientSession,
-    host: str,
-    frame_path: str,
-    center_x: int,
-    center_y: int,
-):
-    """Fetch RainViewer's radar tiles for the mosaic's area, at RainViewer's own zoom.
-
-    RainViewer's radar tiles top out at RAINVIEWER_MAX_ZOOM (zoom 8+ returns
-    a "Zoom Level Not Supported" placeholder image) — verified directly
-    against their tile server. When RADAR_ZOOM is higher than that (for a
-    more detailed basemap), the radar tiles covering the same area are
-    fetched at RAINVIEWER_MAX_ZOOM instead, and render_radar_frames
-    scales them up to fit, so the map itself can still be more zoomed in
-    even though the radar data's own resolution is capped by RainViewer.
-    """
-    from PIL import Image
-
-    half = RADAR_TILE_GRID // 2
-    target_size = RADAR_TILE_SIZE * RADAR_TILE_GRID
-    origin_x = (center_x - half) * RADAR_TILE_SIZE
-    origin_y = (center_y - half) * RADAR_TILE_SIZE
-
-    if RAINVIEWER_MAX_ZOOM >= RADAR_ZOOM:
-        # No scaling needed, fetch directly at RADAR_ZOOM.
-        layer = Image.new("RGBA", (target_size, target_size))
-        positions = [(dx, dy) for dx in range(-half, half + 1) for dy in range(-half, half + 1)]
-        urls = [
-            f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RADAR_ZOOM}/{center_x + dx}/{center_y + dy}/"
-            f"{RADAR_COLOR_SCHEME}/1_1.png"
-            for dx, dy in positions
-        ]
-        tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
-        for (dx, dy), tile_img in zip(positions, tiles):
-            layer.paste(
-                tile_img, ((dx + half) * RADAR_TILE_SIZE, (dy + half) * RADAR_TILE_SIZE)
-            )
-        return layer
-
-    scale = 2.0 ** (RAINVIEWER_MAX_ZOOM - RADAR_ZOOM)
-    origin_x_r = origin_x * scale
-    origin_y_r = origin_y * scale
-    size_r = target_size * scale
-
-    tile_x_start = int(origin_x_r // RADAR_TILE_SIZE)
-    tile_x_end = int((origin_x_r + size_r) // RADAR_TILE_SIZE)
-    tile_y_start = int(origin_y_r // RADAR_TILE_SIZE)
-    tile_y_end = int((origin_y_r + size_r) // RADAR_TILE_SIZE)
-
-    raw = Image.new(
-        "RGBA",
-        (
-            (tile_x_end - tile_x_start + 1) * RADAR_TILE_SIZE,
-            (tile_y_end - tile_y_start + 1) * RADAR_TILE_SIZE,
-        ),
-    )
-    tile_positions = [
-        (x, y)
-        for x in range(tile_x_start, tile_x_end + 1)
-        for y in range(tile_y_start, tile_y_end + 1)
-    ]
-    urls = [
-        f"{host}{frame_path}/{RADAR_TILE_SIZE}/{RAINVIEWER_MAX_ZOOM}/{x}/{y}/"
-        f"{RADAR_COLOR_SCHEME}/1_1.png"
-        for x, y in tile_positions
-    ]
-    tiles = await asyncio.gather(*(_fetch_tile(session, url) for url in urls))
-    for (x, y), tile_img in zip(tile_positions, tiles):
-        raw.paste(
-            tile_img,
-            ((x - tile_x_start) * RADAR_TILE_SIZE, (y - tile_y_start) * RADAR_TILE_SIZE),
-        )
-
-    crop_left = round(origin_x_r - tile_x_start * RADAR_TILE_SIZE)
-    crop_top = round(origin_y_r - tile_y_start * RADAR_TILE_SIZE)
-    return raw.crop(
-        (crop_left, crop_top, crop_left + round(size_r), crop_top + round(size_r))
-    )
-
-
 @dataclass
 class RadarFrame:
     """One animation frame's data, before anything is drawn on it."""
 
     when: datetime  # UTC
-    radar: Any | None  # RainViewer layer at its own zoom (see _fetch_radar_layer)
     cloud_tops: Any | None  # infrared raster (see satellite.cold_cloud_tops_layer)
-    # SINARAME images per radar for this frame, newest first: its own and
-    # the previous couple of slots, since some radars interleave scans
-    # that are pure artifacts (render_radar_frames draws the first good one).
-    sinarame: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -627,63 +541,22 @@ class RadarLayers:
     center_y: int
     basemap: Any
     frames: list[RadarFrame]  # oldest first
-    sinarame_radars: list[str] = field(default_factory=list)  # the ones with images
-
-
-# How far back a frame looks for a usable SINARAME image of each radar.
-_SINARAME_FRAME_FALLBACK = 2  # 10-min slots
 
 
 async def fetch_radar_layers(
     session: aiohttp.ClientSession, latitude: float, longitude: float
 ) -> RadarLayers:
-    """Download the basemap once, plus each frame's radar and infrared layers.
-
-    With SINARAME radars covering the map (see nowcast.py), the frames are
-    theirs: the last RADAR_ANIMATION_FRAMES 10-min slots up to their
-    newest image, ~25 min behind. RainViewer and the infrared stay under
-    them, matched by time. Without any SINARAME image, frame times are
-    RainViewer's (10 min apart) as before; and if RainViewer is down too,
-    the animation still shows the infrared over the last
-    RADAR_ANIMATION_FRAMES 10-minute slots.
-    """
-    # Imported here: satellite.py and nowcast.py import this module.
-    from .nowcast import fetch_sinarame_frames, sinarame_radars_in_view
+    """Download the basemap once, plus each frame's infrared, for the last 10-min slots."""
+    # Imported here: satellite.py imports this module's tile math.
     from .satellite import fetch_cold_cloud_tops_rasters
 
+    now = datetime.now(timezone.utc)
+    aligned = now.replace(minute=now.minute // 10 * 10, second=0, microsecond=0)
+    times = [aligned - timedelta(minutes=10 * i) for i in reversed(range(RADAR_ANIMATION_FRAMES))]
+
     center_x, center_y = _deg2tile(latitude, longitude, RADAR_ZOOM)
-    sinarame_radars = sinarame_radars_in_view(*_viewport_bounds(center_x, center_y))
-
-    async def rainviewer_paths() -> tuple[str | None, list[tuple[datetime, str]]]:
-        try:
-            return await _fetch_frame_paths(session)
-        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError) as err:
-            _LOGGER.warning("Error fetching RainViewer frame index: %s", err)
-            return None, []
-
-    (host, paths), *sinarame_images = await asyncio.gather(
-        rainviewer_paths(),
-        *(
-            fetch_sinarame_frames(session, radar_id, RADAR_ANIMATION_FRAMES + _SINARAME_FRAME_FALLBACK + 4)
-            for radar_id in sinarame_radars
-        ),
-    )
-    sinarame_by_radar = {
-        radar_id: images for radar_id, images in zip(sinarame_radars, sinarame_images) if images
-    }
-    newest_sinarame = max((max(images) for images in sinarame_by_radar.values()), default=None)
-    if newest_sinarame is not None:
-        times = [newest_sinarame - timedelta(minutes=10 * i) for i in reversed(range(RADAR_ANIMATION_FRAMES))]
-    elif paths:
-        times = [when for when, _ in paths]
-    else:
-        now = datetime.now(timezone.utc)
-        aligned = now.replace(minute=now.minute // 10 * 10, second=0, microsecond=0)
-        times = [aligned - timedelta(minutes=10 * i) for i in reversed(range(RADAR_ANIMATION_FRAMES))]
-    paths = [(when, path) for when, path in paths if when in times]
-
     half = RADAR_TILE_GRID // 2
-    basemap, cloud_tops, radar_layers = await asyncio.gather(
+    basemap, cloud_tops = await asyncio.gather(
         _fetch_basemap_mosaic(session, center_x, center_y),
         fetch_cold_cloud_tops_rasters(
             session,
@@ -693,139 +566,13 @@ async def fetch_radar_layers(
             RADAR_ZOOM,
             times,
         ),
-        asyncio.gather(
-            *(_fetch_radar_layer(session, host, path, center_x, center_y) for _, path in paths)
-        ),
     )
-    radar_by_time = {when: layer for (when, _), layer in zip(paths, radar_layers)}
-
-    def sinarame_for(when: datetime) -> dict[str, list[Any]]:
-        candidates = {}
-        for radar_id, images in sinarame_by_radar.items():
-            recent = [
-                images[when - timedelta(minutes=10 * i)]
-                for i in range(_SINARAME_FRAME_FALLBACK + 1)
-                if when - timedelta(minutes=10 * i) in images
-            ]
-            if recent:
-                candidates[radar_id] = recent
-        return candidates
-
     return RadarLayers(
         center_x,
         center_y,
         basemap,
-        [
-            RadarFrame(when, radar_by_time.get(when), clouds, sinarame_for(when))
-            for when, clouds in zip(times, cloud_tops)
-        ],
-        [radar_id for radar_id in sinarame_radars if radar_id in sinarame_by_radar],
+        [RadarFrame(when, clouds) for when, clouds in zip(times, cloud_tops)],
     )
-
-
-# SINARAME's ~1 km pixels, scaled up ~4x onto the map: blurred after
-# scaling, so cells have soft edges instead of blocks.
-_SINARAME_BLUR_PX = 4
-_COVERAGE_FEATHER_PX = 40
-
-
-def _sinarame_layers(
-    layers: RadarLayers, size: int, origin_x: float, origin_y: float
-) -> tuple[list[Any | None], Any | None]:
-    """(each frame's SINARAME layer or None, the radars' coverage on the map or None).
-
-    Per radar: each frame's image filtered (see nowcast.sinarame_dbz),
-    picking the fullest of its recent candidates (some radars interleave
-    a sparse scan); then its sparse scans and static clutter dropped
-    across the animation (nowcast.clean_radar_frames). The radars are
-    combined taking the strongest echo where they overlap (the usual
-    composite: nearest-on-top would cut rain with straight edges),
-    smoothed, and colored like RainViewer.
-
-    A frame without its infrared can't be filtered against interference:
-    it gets no SINARAME layer. The coverage (0-1, feathered) is the
-    radars' 240 km circles, where the infrared isn't drawn.
-    """
-    import numpy as np
-    from PIL import Image, ImageDraw, ImageFilter
-
-    from .nowcast import _RADAR_WEAK_DBZ, SINARAME_RADARS, clean_radar_frames, colorize_dbz, sinarame_dbz
-
-    scale = 2.0 ** (GIBS_MAX_ZOOM_INFRARED - RADAR_ZOOM)
-    infrared_origin = (origin_x * scale, origin_y * scale)
-    total = len(layers.frames)
-    composites: list[Any | None] = [None] * total
-    coverage = None
-    for radar_id in layers.sinarame_radars:
-        decoded: dict[tuple[int, int], Any] = {}
-        per_frame: list[Any | None] = []
-        for frame_data in layers.frames:
-            best = None
-            infrared = frame_data.cloud_tops
-            for image in frame_data.sinarame.get(radar_id, []) if infrared is not None else []:
-                key = (id(image), id(infrared))
-                if key not in decoded:
-                    decoded[key] = sinarame_dbz(radar_id, image, infrared, infrared_origin)
-                dbz = decoded[key]
-                if dbz is not None and (best is None or (dbz >= _RADAR_WEAK_DBZ).sum() > (best >= _RADAR_WEAK_DBZ).sum()):
-                    best = dbz
-            # A copy: clean_radar_frames edits in place, and frames can share one.
-            per_frame.append(None if best is None else best.copy())
-        present = [i for i, dbz in enumerate(per_frame) if dbz is not None]
-        if not present:
-            continue
-        keep = {present[i] for i in clean_radar_frames([per_frame[i] for i in present], _RADAR_WEAK_DBZ)}
-
-        _, south, west, north, east = SINARAME_RADARS[radar_id]
-        x0, y0 = _deg2pixel(north, west, RADAR_ZOOM)
-        x1, y1 = _deg2pixel(south, east, RADAR_ZOOM)
-        width, height = round(x1 - x0), round(y1 - y0)
-        left, top = round(x0 - origin_x), round(y0 - origin_y)
-        mx0, my0 = max(left, 0), max(top, 0)
-        mx1, my1 = min(left + width, size), min(top + height, size)
-        if mx0 >= mx1 or my0 >= my1:
-            continue
-        if coverage is None:
-            coverage = Image.new("L", (size, size))
-        radius = width / 2  # the square is drawn around the radar's 240 km circle
-        cx, cy = left + width / 2, top + height / 2
-        ImageDraw.Draw(coverage).ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=255)
-        # A frame left without this radar holds its previous one for a
-        # couple of slots: an empty map would read as "no rain".
-        shown, last = [], None
-        for i in range(total):
-            if i in keep:
-                last = i
-            shown.append(last if last is not None and i - last <= _SINARAME_FRAME_FALLBACK else None)
-        resized_by_frame: dict[int, Any] = {}
-        for i, source in enumerate(shown):
-            if source is None:
-                continue
-            if source not in resized_by_frame:
-                resized_by_frame[source] = np.asarray(
-                    Image.fromarray(per_frame[source], mode="F").resize((width, height), Image.BILINEAR)
-                )
-            resized = resized_by_frame[source]
-            if composites[i] is None:
-                composites[i] = np.zeros((size, size), dtype=np.float32)
-            np.maximum(
-                composites[i][my0:my1, mx0:mx1],
-                resized[my0 - top : my1 - top, mx0 - left : mx1 - left],
-                out=composites[i][my0:my1, mx0:mx1],
-            )
-
-    images: list[Any | None] = []
-    for composite in composites:
-        if composite is None:
-            images.append(None)
-            continue
-        # Blurred as 8-bit (PIL won't blur float images): 1/3 dBZ steps.
-        smooth = Image.fromarray((np.clip(composite, 0, 85) * 3).astype(np.uint8))
-        smooth = smooth.filter(ImageFilter.GaussianBlur(_SINARAME_BLUR_PX))
-        images.append(colorize_dbz(np.asarray(smooth).astype(np.float32) / 3, soft=True))
-    if coverage is not None:
-        coverage = coverage.filter(ImageFilter.GaussianBlur(_COVERAGE_FEATHER_PX))
-    return images, coverage
 
 
 def render_radar_frames(
@@ -854,8 +601,6 @@ def render_radar_frames(
     `current_weather` / `hourly_forecast` are coordinator.data's own fields,
     burned into a caption banner so the image is useful standalone.
     """
-    from PIL import Image, ImageChops
-
     from .satellite import (
         _caption_bar_height,
         _draw_caption,
@@ -869,24 +614,14 @@ def render_radar_frames(
     origin_x = (center_x - half) * RADAR_TILE_SIZE
     origin_y = (center_y - half) * RADAR_TILE_SIZE
 
-    sinarame_layers, coverage = _sinarame_layers(layers, size, origin_x, origin_y)
-
-    # The newest frames can share one infrared raster (GIBS lags behind
-    # RainViewer): process each distinct one once. Only outside the
-    # SINARAME radars' reach: both layers on top of each other just
-    # muddle the map, and where there's radar, it's the one that sees rain.
+    # The newest frames can share one infrared raster (GIBS publishes 10-40
+    # min late): process each distinct one once.
     processed: dict[int, Any] = {}
     cloud_layers = []
     for frame_data in layers.frames:
         raster = frame_data.cloud_tops
         if raster is not None and id(raster) not in processed:
-            clouds = cold_cloud_tops_layer(raster, size)
-            if clouds is not None and coverage is not None:
-                alpha = ImageChops.multiply(clouds.getchannel("A"), ImageChops.invert(coverage))
-                clouds.putalpha(alpha)
-                if alpha.getbbox() is None:
-                    clouds = None
-            processed[id(raster)] = clouds
+            processed[id(raster)] = cold_cloud_tops_layer(raster, size)
         cloud_layers.append(processed.get(id(raster)) if raster is not None else None)
     has_cloud_tops = any(layer is not None for layer in cloud_layers)
 
@@ -905,19 +640,8 @@ def render_radar_frames(
     frames = []
     for i, (frame_data, clouds) in enumerate(zip(layers.frames, cloud_layers)):
         frame = layers.basemap.copy()
-        # Cloud tops under the radar: where both show, the radar's actual
-        # precipitation is the more precise of the two.
         if clouds is not None:
             frame.alpha_composite(clouds)
-        if frame_data.radar is not None:
-            radar = frame_data.radar
-            if radar.size != frame.size:
-                radar = radar.resize(frame.size, Image.NEAREST)
-            frame.alpha_composite(radar)
-        # SINARAME over RainViewer: in Argentina it's the one that sees the rain.
-        sinarame = sinarame_layers[i]
-        if sinarame is not None:
-            frame.alpha_composite(sinarame)
         if rings:
             draw_region_overlay(
                 frame, rings, lambda lat, lon: _deg2pixel(lat, lon, RADAR_ZOOM), origin_x, origin_y

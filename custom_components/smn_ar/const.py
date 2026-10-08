@@ -84,9 +84,8 @@ BASEMAP_TILE_URL_TEMPLATE: Final = "https://tile.openstreetmap.org/{z}/{x}/{y}.p
 BASEMAP_USER_AGENT: Final = (
     "smn-ar-ha-radar/1.0 (+https://github.com/pabloantonelli/smn-ar-ha)"
 )
-RAINVIEWER_ATTRIBUTION: Final = (
-    "Radar: SINARAME (radares.hidricosargentina.gob.ar) and RainViewer (rainviewer.com) · "
-    "Map © OpenStreetMap contributors"
+RADAR_CAMERA_ATTRIBUTION: Final = (
+    "Imagery by NASA GIBS / NOAA GOES-East · Map © OpenStreetMap contributors"
 )
 # Spanish labels for HA condition strings, used to caption the radar
 # snapshot image (drawn with Pillow, not HA's own translation system —

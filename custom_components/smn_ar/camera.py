@@ -1,6 +1,7 @@
-"""Camera platform: animated precipitation radar (RainViewer) + SMN's alert
-zones, a map of the country's avisos, and animated NASA GIBS satellite views
-of the country and of the configured location's province (color and infrared).
+"""Camera platform: animated storm clouds (infrared) + SMN's alert zones
+around the location ("Radar"), a map of the country's avisos, and animated
+NASA GIBS satellite views of the country and of the configured location's
+province (color and infrared).
 
 Not sourced from SMN's map servers — see radar.py / const.py for why. The
 alert zone polygons drawn on the radar ARE from SMN though (the same
@@ -46,7 +47,7 @@ from .const import (
     DOMAIN,
     GIBS_ATTRIBUTION,
     RADAR_UPDATE_INTERVAL,
-    RAINVIEWER_ATTRIBUTION,
+    RADAR_CAMERA_ATTRIBUTION,
     SATELLITE_ANIMATION_UPDATE_INTERVAL,
 )
 from .coordinator import ArgentinaSMNData, ArgentinaSMNDataUpdateCoordinator
@@ -291,7 +292,10 @@ class _SMNAlertsImageCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator]
 
 
 class SMNRadarCamera(_SMNVideoMixin, _SMNAlertsImageCamera):
-    """Precipitation radar animation with SMN's active alert zones outlined.
+    """Storm clouds (infrared) around the location, with SMN's active alert zones outlined.
+
+    Still called "Radar" (entity ids and dashboards keep working), though
+    the radars only feed the next-rain nowcast now: see radar.py.
 
     Like the satellite cameras: a GIF as the camera image and an MP4 for
     the dashboard card (see _SMNVideoMixin). Built in the background (see
@@ -305,7 +309,7 @@ class SMNRadarCamera(_SMNVideoMixin, _SMNAlertsImageCamera):
     """
 
     _attr_translation_key = "radar"
-    _attr_attribution = RAINVIEWER_ATTRIBUTION
+    _attr_attribution = RADAR_CAMERA_ATTRIBUTION
 
     def __init__(
         self,

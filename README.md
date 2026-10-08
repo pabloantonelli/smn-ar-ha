@@ -61,7 +61,7 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 
 | Nombre | Qué muestra |
 |---|---|
-| Radar | Animación de ~100 min de la lluvia, ~300 km alrededor, con el clima actual y los avisos cercanos. Muestra los radares del SINARAME que cubren el mapa (filtrados como en [próxima lluvia](#próxima-lluvia-o-tormenta) y suavizados), y RainViewer debajo; las nubes de tormenta del satélite sólo aparecen donde no llega el SINARAME, para no mezclar dos capas. Termina ~15–30 min atrás, lo que tarda en publicar el SINARAME. Sin SINARAME, queda RainViewer con el satélite como antes |
+| Radar | Animación de los últimos ~100 min de las nubes de tormenta vistas por satélite (infrarrojo), ~300 km alrededor, con el clima actual y los avisos cercanos. Los radares (SINARAME y RainViewer) no se dibujan: se usan para calcular la [próxima lluvia](#próxima-lluvia-o-tormenta) |
 | Avisos Argentina | Mapa del país con los polígonos de todos los avisos vigentes y tu ubicación |
 | Satélite Argentina / Satélite provincia | Animación satelital de los últimos ~100 min en color real. De noche pasa sola a una vista nocturna |
 | … Infrarrojo | Igual, mostrando la temperatura de los topes de nube. Sirve para ver la intensidad de una tormenta |
