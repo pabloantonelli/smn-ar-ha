@@ -33,6 +33,7 @@ import io
 from datetime import datetime, timedelta, timezone
 import logging
 import math
+import os
 from typing import Any, Callable
 
 import aiohttp
@@ -146,6 +147,8 @@ class Field:
     # Pixels left out of the motion (2D bool array), e.g. a radar's own
     # ground clutter: it doesn't move, so it would pin the motion at zero.
     motion_mask: Any | None = None
+    # Run clean_radar_frames on the decoded frames (SINARAME's).
+    clean: bool = False
 
 
 @dataclass
@@ -418,6 +421,43 @@ def project_arrival(field: Field, motion: Motion | None, horizon_minutes: int = 
     return nowcast
 
 
+_SPARSE_SCAN_RATIO = 0.5
+_SPARSE_SCAN_MIN_PIXELS = 1000
+_STATIC_CLUTTER_SHARE = 0.9
+_STATIC_CLUTTER_MIN_FRAMES = 4
+
+
+def clean_radar_frames(frames: list[Any], weak: float) -> list[int]:
+    """Drop a radar's sparse scans and its static clutter; the indices of the frames kept.
+
+    - A frame with under half the echo area of the frames on both sides
+      is the other scan type some radars interleave (seen live on
+      Córdoba's): left out, or the animation flickers and the motion
+      jumps. Against its neighbors, not the fullest frame, so rain that's
+      fading out isn't mistaken for it.
+    - A pixel with echoes in nearly every frame is terrain, not rain (the
+      sierras around Córdoba): zeroed in place, in all of them. Rain that
+      sits on the very same pixel for the whole window is rare; this only
+      runs with enough frames to tell.
+    """
+    import numpy as np
+
+    areas = [int((frame >= weak).sum()) for frame in frames]
+    keep = []
+    for i, area in enumerate(areas):
+        neighbors = areas[max(i - 1, 0) : i] + areas[i + 1 : i + 2]
+        reference = min(neighbors, default=0)
+        if reference < _SPARSE_SCAN_MIN_PIXELS or area >= _SPARSE_SCAN_RATIO * reference:
+            keep.append(i)
+    kept = [frames[i] for i in keep]
+    if len(kept) >= _STATIC_CLUTTER_MIN_FRAMES:
+        share = np.mean([frame >= weak for frame in kept], axis=0)
+        static = share >= _STATIC_CLUTTER_SHARE
+        for frame in kept:
+            frame[static] = 0
+    return keep
+
+
 def run_nowcast(field: Field, steering: Motion | None) -> Nowcast | None:
     """Decode the fetched frames, then their motion and the arrival.
 
@@ -439,6 +479,10 @@ def run_nowcast(field: Field, steering: Motion | None) -> Nowcast | None:
             return None
         field.times = [when for when, _ in decoded]
         field.frames = [frame for _, frame in decoded]
+    if field.clean:
+        keep = clean_radar_frames(field.frames, field.weak)
+        field.times = [field.times[i] for i in keep]
+        field.frames = [field.frames[i] for i in keep]
     motion = estimate_motion(field)
     if motion is None or (
         steering is not None
@@ -654,7 +698,7 @@ _SINARAME_RADIUS_KM = 240
 # what's coming has to be inside its 240 km.
 _SINARAME_MAX_DISTANCE_KM = 180
 _SINARAME_LOOKBACK_SLOTS = 10  # 10-min slots, for its ~25 min delay plus gaps
-_SINARAME_FRAMES = 5
+_SINARAME_FRAMES = 6
 # The viewer's legend: one color every 5 dBZ from -15 to 70, linearly
 # blended in between. The images use a few more shades inside each band
 # than the legend, so a color is matched to the nearest legend shade.
@@ -668,7 +712,11 @@ _SINARAME_LEGEND = (
 #   of its image (RMA8, RMA13): a frame mostly at 55 dBZ or more is dropped,
 # - interference shows up as radial streaks in clear sky (RMA2): no rain
 #   where the infrared shows no cloud top colder than -10 °C nearby,
-# - and no storm (45 dBZ+) without tops of -40 °C or colder nearby.
+# - no storm-strength echo (45 dBZ+) without tops of -40 °C or colder
+#   nearby: that's terrain (the sierras around Córdoba), not a storm,
+# - some radars also interleave a sparse scan, with a fraction of the
+#   echoes (RMA1), and the sierras' clutter stays put frame after frame:
+#   see clean_radar_frames.
 _SINARAME_BROKEN_FRACTION = 0.25
 _SINARAME_BROKEN_DBZ = 55
 _SINARAME_CLOUD_MAX_C = -10
@@ -720,17 +768,17 @@ def infrared_temperature(image: Any) -> Any:
     return temperature
 
 
-def _sinarame_decoder(
-    bounds: tuple[float, float, float, float], infrared_origin: tuple[float, float]
-) -> Callable[[Any], Any]:
+def _sinarame_decoder(radar_id: str, infrared_origin: tuple[float, float]) -> Callable[[Any], Any]:
     """Decoder for (radar PNG, infrared mosaic or None) frames of one radar.
 
     `infrared_origin` is the world pixel (GIBS zoom) of the infrared
     mosaic's top-left corner, to look up each radar pixel's cloud top.
+    Each new image also feeds the radar's learned clutter map (see
+    ClutterMaps), and the clutter it has learned is taken out.
     """
     import numpy as np
 
-    south, west, north, east = bounds
+    _, south, west, north, east = SINARAME_RADARS[radar_id]
     size = _SINARAME_SIZE
     colors, values = [], []
     legend = [tuple(int(h[i : i + 2], 16) for i in (0, 2, 4)) for h in _SINARAME_LEGEND]
@@ -764,6 +812,10 @@ def _sinarame_decoder(
         if active.sum() >= 500 and (dbz[active] >= _SINARAME_BROKEN_DBZ).mean() > _SINARAME_BROKEN_FRACTION:
             return None
         dbz = np.clip(dbz, 0, None)
+        CLUTTER.observe(radar_id, radar_image.info.get(_WHEN_KEY), dbz >= _RADAR_WEAK_DBZ)
+        clutter = CLUTTER.mask(radar_id)
+        if clutter is not None:
+            dbz[clutter] = 0
         # Speckle (ground clutter, a radial of interference): an opening
         # keeps only echoes at least 3 px (~3 km) across.
         echoes = Image.fromarray(((dbz >= _RADAR_WEAK_DBZ) * 255).astype(np.uint8))
@@ -778,8 +830,9 @@ def _sinarame_decoder(
             h, w = coldest.shape
             nearby = coldest[np.clip(ir_y, 0, h - 1)[:, None], np.clip(ir_x, 0, w - 1)[None, :]]
             dbz[nearby > _SINARAME_CLOUD_MAX_C] = 0
-            capped = (nearby > _SINARAME_STORM_CLOUD_MAX_C) & (dbz >= RADAR_STORM_DBZ)
-            dbz[capped] = RADAR_STORM_DBZ - 0.5
+            # Storm-strength echoes without storm tops: terrain (the sierras
+            # around Córdoba) far more often than rain.
+            dbz[(nearby > _SINARAME_STORM_CLOUD_MAX_C) & (dbz >= RADAR_STORM_DBZ)] = 0
         return dbz
 
     return decode
@@ -801,6 +854,113 @@ async def _fetch_png(session: aiohttp.ClientSession, url: str) -> Any | None:
         return None
 
 
+_WHEN_KEY = "smn_ar_when"
+_CLUTTER_DECAY = 0.99  # per image: ~100 images (~17 h) of memory
+_CLUTTER_MIN_IMAGES = 36  # ~6 h before it's trusted
+_CLUTTER_SHARE = 0.6
+# The decayed image count after _CLUTTER_MIN_IMAGES images.
+_CLUTTER_MIN_WEIGHT = (1 - _CLUTTER_DECAY**_CLUTTER_MIN_IMAGES) / (1 - _CLUTTER_DECAY)
+CLUTTER_FILE = "smn_ar_clutter.npz"
+
+
+class ClutterMaps:
+    """Each SINARAME radar's terrain clutter, learned from its own images.
+
+    Terrain shows up on the same pixels image after image, day after day;
+    rain moves on. Every new image (once, by its time) adds to a decaying
+    per-pixel count of echoes; a pixel with echoes in over _CLUTTER_SHARE
+    of the recent images is clutter (the sierras around Córdoba, seen
+    live). Rain parked on one spot for most of a day would be taken for
+    clutter too, which is rare enough.
+
+    Shared by the camera and the nowcast (both decode in executor threads,
+    hence the lock) and saved to .storage, so a restart doesn't start over.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.Lock()
+        self._counts: dict[str, Any] = {}
+        self._images: dict[str, float] = {}
+        self._last: dict[str, datetime] = {}
+        self._dirty = False
+
+    def observe(self, radar_id: str, when: datetime | None, echoes: Any) -> None:
+        import numpy as np
+
+        if when is None:
+            return
+        with self._lock:
+            if radar_id in self._last and when <= self._last[radar_id]:
+                return
+            self._last[radar_id] = when
+            counts = self._counts.get(radar_id)
+            if counts is None or counts.shape != echoes.shape:
+                counts = np.zeros(echoes.shape, dtype=np.float32)
+                self._images[radar_id] = 0.0
+            counts *= _CLUTTER_DECAY
+            counts += echoes
+            self._counts[radar_id] = counts
+            self._images[radar_id] = self._images[radar_id] * _CLUTTER_DECAY + 1
+            self._dirty = True
+
+    def mask(self, radar_id: str) -> Any | None:
+        """Clutter pixels (2D bool), or None while there aren't enough images yet."""
+        with self._lock:
+            counts = self._counts.get(radar_id)
+            images = self._images.get(radar_id, 0.0)
+            if counts is None or images < _CLUTTER_MIN_WEIGHT:
+                return None
+            clutter = counts / images >= _CLUTTER_SHARE
+        # Grown a pixel: the edges of a clutter patch come and go.
+        from PIL import Image, ImageFilter
+        import numpy as np
+
+        grown = Image.fromarray((clutter * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(3))
+        return np.asarray(grown) > 0
+
+    def load(self, path: str) -> None:
+        """Read what was saved (blocking: run it in an executor)."""
+        import numpy as np
+
+        try:
+            with np.load(path) as data:
+                with self._lock:
+                    for key in data.files:
+                        radar_id, kind = key.rsplit("__", 1)
+                        if kind == "counts":
+                            self._counts[radar_id] = data[key].astype(np.float32)
+                        elif kind == "images":
+                            self._images[radar_id] = float(data[key])
+                        elif kind == "last":
+                            self._last[radar_id] = datetime.fromtimestamp(float(data[key]), timezone.utc)
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError) as err:
+            _LOGGER.warning("Couldn't read the radar clutter maps, learning them again: %s", err)
+
+    def save(self, path: str) -> None:
+        """Write them out if they changed (blocking: run it in an executor)."""
+        import numpy as np
+
+        with self._lock:
+            if not self._dirty:
+                return
+            arrays = {}
+            for radar_id, counts in self._counts.items():
+                arrays[f"{radar_id}__counts"] = counts.astype(np.float16)
+                arrays[f"{radar_id}__images"] = np.float64(self._images[radar_id])
+                arrays[f"{radar_id}__last"] = np.float64(self._last[radar_id].timestamp())
+            self._dirty = False
+        tmp = f"{path}.tmp.npz"
+        np.savez_compressed(tmp, **arrays)
+        os.replace(tmp, path)
+
+
+CLUTTER = ClutterMaps()
+
+
 async def fetch_sinarame_frames(
     session: aiohttp.ClientSession, radar_id: str, slots: int, now: datetime | None = None
 ) -> dict[datetime, Any]:
@@ -815,7 +975,12 @@ async def fetch_sinarame_frames(
     images = await asyncio.gather(
         *(_fetch_png(session, SINARAME_URL.format(radar=radar_id, stamp=t.strftime("%Y%m%d%H%M%S"))) for t in times)
     )
-    return {t.astimezone(timezone.utc): image for t, image in zip(times, images) if image is not None}
+    found = {}
+    for t, image in zip(times, images):
+        if image is not None:
+            image.info[_WHEN_KEY] = t.astimezone(timezone.utc)  # for ClutterMaps.observe
+            found[t.astimezone(timezone.utc)] = image
+    return found
 
 
 def sinarame_radars_in_view(min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> list[str]:
@@ -835,13 +1000,15 @@ def sinarame_radars_in_view(min_lat: float, min_lon: float, max_lat: float, max_
 
 def sinarame_dbz(radar_id: str, image: Any, infrared: Any, infrared_origin: tuple[float, float]) -> Any | None:
     """One radar image decoded and filtered (see _sinarame_decoder), or None if it's an artifact scan."""
-    return _sinarame_decoder(SINARAME_RADARS[radar_id][1:], infrared_origin)((image, infrared))
+    return _sinarame_decoder(radar_id, infrared_origin)((image, infrared))
 
 
-def colorize_dbz(dbz: Any) -> Any:
+def colorize_dbz(dbz: Any, soft: bool = False) -> Any:
     """dBZ array -> RGBA image in RainViewer's Universal Blue, transparent below 15 dBZ.
 
     So a SINARAME radar reads like the RainViewer one on the same map.
+    `soft` fades the edges in from 12 to 20 dBZ instead of a hard cut, for
+    a smoothed field.
     """
     import numpy as np
     from PIL import Image
@@ -852,7 +1019,10 @@ def colorize_dbz(dbz: Any) -> Any:
     index = np.clip(np.round(dbz).astype(int) - _RADAR_PALETTE_START_DBZ, 0, len(palette) - 1)
     rgba = np.zeros((*dbz.shape, 4), dtype=np.uint8)
     rgba[..., :3] = palette[index]
-    rgba[..., 3] = np.where(dbz >= _RADAR_PALETTE_START_DBZ, 255, 0)
+    if soft:
+        rgba[..., 3] = (np.clip((dbz - 12) / 8, 0, 1) * 255).astype(np.uint8)
+    else:
+        rgba[..., 3] = np.where(dbz >= _RADAR_PALETTE_START_DBZ, 255, 0)
     return Image.fromarray(rgba, mode="RGBA")
 
 
@@ -870,7 +1040,6 @@ async def fetch_sinarame_field(
     when there's no infrared to filter it with.
     """
     name, south, west, north, east = SINARAME_RADARS[radar_id]
-    bounds = (south, west, north, east)
     available = list((await fetch_sinarame_frames(session, radar_id, _SINARAME_LOOKBACK_SLOTS, now)).items())
     available = available[-_SINARAME_FRAMES:]
     if not available:
@@ -923,6 +1092,7 @@ async def fetch_sinarame_field(
         rain=RADAR_RAIN_DBZ,
         storm=RADAR_STORM_DBZ,
         weak=_RADAR_WEAK_DBZ,
-        decode=_sinarame_decoder(bounds, origin),
+        decode=_sinarame_decoder(radar_id, origin),
         motion_mask=near_radar,
+        clean=True,
     )

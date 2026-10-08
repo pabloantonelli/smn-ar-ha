@@ -723,64 +723,109 @@ async def fetch_radar_layers(
     )
 
 
-def _sinarame_layer(
-    frame_data: RadarFrame,
-    radar_ids: list[str],
-    size: int,
-    origin_x: float,
-    origin_y: float,
-    decoded: dict[tuple[str, int, int], Any],
-) -> Any | None:
-    """The SINARAME radars of one frame, on the map's pixels, or None if none is usable.
+# SINARAME's ~1 km pixels, scaled up ~4x onto the map: blurred after
+# scaling, so cells have soft edges instead of blocks.
+_SINARAME_BLUR_PX = 4
+_COVERAGE_FEATHER_PX = 40
 
-    Where radars overlap, the strongest echo wins (the usual composite,
-    like the viewer's own CMAX): drawing the nearest on top would cut
-    another's rain with a straight edge. Needs the frame's infrared, to
-    filter out interference (see nowcast.sinarame_dbz): without it, the
-    frame keeps just RainViewer. `decoded` caches the filtered dBZ across
-    frames sharing an image and infrared raster.
+
+def _sinarame_layers(
+    layers: RadarLayers, size: int, origin_x: float, origin_y: float
+) -> tuple[list[Any | None], Any | None]:
+    """(each frame's SINARAME layer or None, the radars' coverage on the map or None).
+
+    Per radar: each frame's image filtered (see nowcast.sinarame_dbz),
+    picking the fullest of its recent candidates (some radars interleave
+    a sparse scan); then its sparse scans and static clutter dropped
+    across the animation (nowcast.clean_radar_frames). The radars are
+    combined taking the strongest echo where they overlap (the usual
+    composite: nearest-on-top would cut rain with straight edges),
+    smoothed, and colored like RainViewer.
+
+    A frame without its infrared can't be filtered against interference:
+    it gets no SINARAME layer. The coverage (0-1, feathered) is the
+    radars' 240 km circles, where the infrared isn't drawn.
     """
     import numpy as np
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageFilter
 
-    from .nowcast import SINARAME_RADARS, colorize_dbz, sinarame_dbz
+    from .nowcast import _RADAR_WEAK_DBZ, SINARAME_RADARS, clean_radar_frames, colorize_dbz, sinarame_dbz
 
-    infrared = frame_data.cloud_tops
-    if infrared is None or not frame_data.sinarame:
-        return None
     scale = 2.0 ** (GIBS_MAX_ZOOM_INFRARED - RADAR_ZOOM)
     infrared_origin = (origin_x * scale, origin_y * scale)
-    composite = None
-    for radar_id in radar_ids:
-        dbz = None
-        for image in frame_data.sinarame.get(radar_id, []):
-            key = (radar_id, id(image), id(infrared))
-            if key not in decoded:
-                decoded[key] = sinarame_dbz(radar_id, image, infrared, infrared_origin)
-            dbz = decoded[key]
-            if dbz is not None:
-                break
-        if dbz is None:
+    total = len(layers.frames)
+    composites: list[Any | None] = [None] * total
+    coverage = None
+    for radar_id in layers.sinarame_radars:
+        decoded: dict[tuple[int, int], Any] = {}
+        per_frame: list[Any | None] = []
+        for frame_data in layers.frames:
+            best = None
+            infrared = frame_data.cloud_tops
+            for image in frame_data.sinarame.get(radar_id, []) if infrared is not None else []:
+                key = (id(image), id(infrared))
+                if key not in decoded:
+                    decoded[key] = sinarame_dbz(radar_id, image, infrared, infrared_origin)
+                dbz = decoded[key]
+                if dbz is not None and (best is None or (dbz >= _RADAR_WEAK_DBZ).sum() > (best >= _RADAR_WEAK_DBZ).sum()):
+                    best = dbz
+            # A copy: clean_radar_frames edits in place, and frames can share one.
+            per_frame.append(None if best is None else best.copy())
+        present = [i for i, dbz in enumerate(per_frame) if dbz is not None]
+        if not present:
             continue
+        keep = {present[i] for i in clean_radar_frames([per_frame[i] for i in present], _RADAR_WEAK_DBZ)}
+
         _, south, west, north, east = SINARAME_RADARS[radar_id]
         x0, y0 = _deg2pixel(north, west, RADAR_ZOOM)
         x1, y1 = _deg2pixel(south, east, RADAR_ZOOM)
         width, height = round(x1 - x0), round(y1 - y0)
-        resized = np.asarray(Image.fromarray(dbz, mode="F").resize((width, height), Image.NEAREST))
-        # The part of the radar's square that falls on the map.
         left, top = round(x0 - origin_x), round(y0 - origin_y)
         mx0, my0 = max(left, 0), max(top, 0)
         mx1, my1 = min(left + width, size), min(top + height, size)
         if mx0 >= mx1 or my0 >= my1:
             continue
+        if coverage is None:
+            coverage = Image.new("L", (size, size))
+        radius = width / 2  # the square is drawn around the radar's 240 km circle
+        cx, cy = left + width / 2, top + height / 2
+        ImageDraw.Draw(coverage).ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=255)
+        # A frame left without this radar holds its previous one for a
+        # couple of slots: an empty map would read as "no rain".
+        shown, last = [], None
+        for i in range(total):
+            if i in keep:
+                last = i
+            shown.append(last if last is not None and i - last <= _SINARAME_FRAME_FALLBACK else None)
+        resized_by_frame: dict[int, Any] = {}
+        for i, source in enumerate(shown):
+            if source is None:
+                continue
+            if source not in resized_by_frame:
+                resized_by_frame[source] = np.asarray(
+                    Image.fromarray(per_frame[source], mode="F").resize((width, height), Image.BILINEAR)
+                )
+            resized = resized_by_frame[source]
+            if composites[i] is None:
+                composites[i] = np.zeros((size, size), dtype=np.float32)
+            np.maximum(
+                composites[i][my0:my1, mx0:mx1],
+                resized[my0 - top : my1 - top, mx0 - left : mx1 - left],
+                out=composites[i][my0:my1, mx0:mx1],
+            )
+
+    images: list[Any | None] = []
+    for composite in composites:
         if composite is None:
-            composite = np.zeros((size, size), dtype=np.float32)
-        np.maximum(
-            composite[my0:my1, mx0:mx1],
-            resized[my0 - top : my1 - top, mx0 - left : mx1 - left],
-            out=composite[my0:my1, mx0:mx1],
-        )
-    return None if composite is None else colorize_dbz(composite)
+            images.append(None)
+            continue
+        # Blurred as 8-bit (PIL won't blur float images): 1/3 dBZ steps.
+        smooth = Image.fromarray((np.clip(composite, 0, 85) * 3).astype(np.uint8))
+        smooth = smooth.filter(ImageFilter.GaussianBlur(_SINARAME_BLUR_PX))
+        images.append(colorize_dbz(np.asarray(smooth).astype(np.float32) / 3, soft=True))
+    if coverage is not None:
+        coverage = coverage.filter(ImageFilter.GaussianBlur(_COVERAGE_FEATHER_PX))
+    return images, coverage
 
 
 def render_radar_frames(
@@ -809,7 +854,7 @@ def render_radar_frames(
     `current_weather` / `hourly_forecast` are coordinator.data's own fields,
     burned into a caption banner so the image is useful standalone.
     """
-    from PIL import Image
+    from PIL import Image, ImageChops
 
     from .satellite import (
         _caption_bar_height,
@@ -824,14 +869,24 @@ def render_radar_frames(
     origin_x = (center_x - half) * RADAR_TILE_SIZE
     origin_y = (center_y - half) * RADAR_TILE_SIZE
 
+    sinarame_layers, coverage = _sinarame_layers(layers, size, origin_x, origin_y)
+
     # The newest frames can share one infrared raster (GIBS lags behind
-    # RainViewer): process each distinct one once.
+    # RainViewer): process each distinct one once. Only outside the
+    # SINARAME radars' reach: both layers on top of each other just
+    # muddle the map, and where there's radar, it's the one that sees rain.
     processed: dict[int, Any] = {}
     cloud_layers = []
     for frame_data in layers.frames:
         raster = frame_data.cloud_tops
         if raster is not None and id(raster) not in processed:
-            processed[id(raster)] = cold_cloud_tops_layer(raster, size)
+            clouds = cold_cloud_tops_layer(raster, size)
+            if clouds is not None and coverage is not None:
+                alpha = ImageChops.multiply(clouds.getchannel("A"), ImageChops.invert(coverage))
+                clouds.putalpha(alpha)
+                if alpha.getbbox() is None:
+                    clouds = None
+            processed[id(raster)] = clouds
         cloud_layers.append(processed.get(id(raster)) if raster is not None else None)
     has_cloud_tops = any(layer is not None for layer in cloud_layers)
 
@@ -847,7 +902,6 @@ def render_radar_frames(
     total = len(layers.frames)
     timeline_height = _caption_bar_height(size, total > 1)
 
-    decoded: dict[tuple[str, int, int], Any] = {}
     frames = []
     for i, (frame_data, clouds) in enumerate(zip(layers.frames, cloud_layers)):
         frame = layers.basemap.copy()
@@ -861,7 +915,7 @@ def render_radar_frames(
                 radar = radar.resize(frame.size, Image.NEAREST)
             frame.alpha_composite(radar)
         # SINARAME over RainViewer: in Argentina it's the one that sees the rain.
-        sinarame = _sinarame_layer(frame_data, layers.sinarame_radars, size, origin_x, origin_y, decoded)
+        sinarame = sinarame_layers[i]
         if sinarame is not None:
             frame.alpha_composite(sinarame)
         if rings:

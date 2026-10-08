@@ -61,7 +61,7 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 
 | Nombre | Qué muestra |
 |---|---|
-| Radar | Animación de ~100 min del radar de precipitación, ~300 km alrededor, con las nubes de tormenta vistas por satélite (infrarrojo), el clima actual y los avisos cercanos. Usa los radares del SINARAME que cubren el mapa (filtrados como en [próxima lluvia](#próxima-lluvia-o-tormenta)), con RainViewer debajo; por eso termina ~15–30 min atrás, que es lo que tarda en publicar el SINARAME. Sin SINARAME, queda RainViewer como antes |
+| Radar | Animación de ~100 min de la lluvia, ~300 km alrededor, con el clima actual y los avisos cercanos. Muestra los radares del SINARAME que cubren el mapa (filtrados como en [próxima lluvia](#próxima-lluvia-o-tormenta) y suavizados), y RainViewer debajo; las nubes de tormenta del satélite sólo aparecen donde no llega el SINARAME, para no mezclar dos capas. Termina ~15–30 min atrás, lo que tarda en publicar el SINARAME. Sin SINARAME, queda RainViewer con el satélite como antes |
 | Avisos Argentina | Mapa del país con los polígonos de todos los avisos vigentes y tu ubicación |
 | Satélite Argentina / Satélite provincia | Animación satelital de los últimos ~100 min en color real. De noche pasa sola a una vista nocturna |
 | … Infrarrojo | Igual, mostrando la temperatura de los topes de nube. Sirve para ver la intensidad de una tormenta |
@@ -124,9 +124,13 @@ fuentes:
      180 km. Ve la lluvia en sí. Sale del visor público de Recursos Hídricos
      (radares.hidricosargentina.gob.ar), que publica cada 10 minutos con unos
      25 de atraso. Esas imágenes traen artefactos (barridos con anillos,
-     interferencias), así que se descartan los frames rotos y no se cuenta
-     lluvia donde el satélite no ve nubes. Si el radar más cercano no sirve,
-     prueba con el siguiente.
+     interferencias, ecos del terreno), así que se descartan los frames rotos,
+     no se cuenta lluvia donde el satélite no ve nubes, y cada radar aprende
+     dónde está su clutter de terreno (las sierras, por ejemplo): los píxeles
+     con eco en la mayoría de las imágenes de las últimas ~17 horas. Ese
+     aprendizaje arranca a aplicarse a las ~6 horas de instalada la
+     integración y se guarda entre reinicios. Si el radar más cercano no
+     sirve, prueba con el siguiente.
    - **Radar de RainViewer** donde no llega el SINARAME y RainViewer tiene
      cobertura (casi sólo el litoral del río Uruguay).
    - **Satélite infrarrojo** (GOES-East) en el resto del país. Ve los topes

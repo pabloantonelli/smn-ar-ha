@@ -175,10 +175,9 @@ def _sinarame_image(color: tuple[int, int, int] | None, fill: float = 0.1) -> Im
 
 
 def test_sinarame_decoder() -> None:
-    from custom_components.smn_ar.nowcast import SINARAME_RADARS, _sinarame_decoder
+    from custom_components.smn_ar.nowcast import _sinarame_decoder
 
-    bounds = SINARAME_RADARS["RMA2"][1:]
-    decode = _sinarame_decoder(bounds, (0, 0))
+    decode = _sinarame_decoder("RMA2", (0, 0))
     rain = decode((_sinarame_image((0x4C, 0xE1, 0x32)), None))  # legend's 20 dBZ
     assert rain[150, 150] == 20
     assert rain[400, 400] == 0
@@ -193,15 +192,16 @@ def test_sinarame_needs_clouds_for_rain_and_cold_tops_for_storms() -> None:
     # Infrared mosaic (GIBS zoom 6) starting a bit NW of the radar's square.
     x0, y0 = _deg2pixel(north, west, 6)
     origin = (int(x0) - 10, int(y0) - 10)
-    decode = _sinarame_decoder((south, west, north, east), origin)
+    decode = _sinarame_decoder("RMA2", origin)
     storm = _sinarame_image((0xC5, 0x00, 0x17))  # 45 dBZ
 
     def infrared(color: tuple[int, int, int]) -> Image.Image:
         return Image.new("RGBA", (300, 300), (*color, 255))
 
+    rain = _sinarame_image((0x3A, 0xB0, 0x27))  # 25 dBZ
     assert decode((storm, infrared((100, 100, 100)))).max() == 0  # clear: warm ground
-    capped = decode((storm, infrared((190, 190, 190))))  # about -16 °C
-    assert 20 <= capped.max() < 45  # rain, but no storm without cold tops
+    assert decode((rain, infrared((190, 190, 190)))).max() == 25  # about -16 °C: rain
+    assert decode((storm, infrared((190, 190, 190)))).max() == 0  # no storm tops: terrain
     assert decode((storm, infrared((255, 0, 0)))).max() == 45  # -61 °C
 
 
@@ -221,3 +221,49 @@ def test_colorize_dbz_like_rainviewer() -> None:
     image = colorize_dbz(dbz)
     assert [image.getpixel((x, 0))[3] for x in range(4)] == [0, 0, 255, 255]
     assert decode_radar(image).tolist() == [[0, 0, 20, 45]]
+
+
+def test_clean_radar_frames() -> None:
+    from custom_components.smn_ar.nowcast import clean_radar_frames
+
+    def frame(cells: list[tuple[int, int]], extra: int = 0) -> np.ndarray:
+        f = np.zeros((100, 100), dtype=np.float32)
+        f[0:3, 0:3] = 30  # a clutter spot, in every frame
+        for x, y in cells:
+            f[y : y + 20, x : x + 20 + extra] = 30
+        return f
+
+    full = [frame([(10 * i, 40), (60, 10)], extra=10) for i in range(4)]
+    sparse = frame([])
+    frames = [full[0], sparse, full[1], full[2], sparse, full[3]]
+    keep = clean_radar_frames(frames, 15)
+    assert keep == [0, 2, 3, 5]
+    # Rain fading out over time isn't a sparse scan.
+    fading = [frame([(10, 10)], extra=60 - 15 * i) for i in range(4)]
+    assert clean_radar_frames(fading, 15) == [0, 1, 2, 3]
+    assert frames[0][1, 1] == 0  # static clutter gone
+    assert frames[0][45, 5] == 30  # moving rain kept
+
+
+def test_clutter_maps_learn_terrain_and_persist(tmp_path) -> None:
+    from custom_components.smn_ar.nowcast import ClutterMaps
+
+    clutter = ClutterMaps()
+    terrain = np.zeros((10, 10), dtype=bool)
+    terrain[2, 2] = True
+    for i in range(40):
+        echoes = terrain.copy()
+        echoes[5, i % 10] = True  # rain passing through
+        clutter.observe("RMA1", T0 + timedelta(minutes=10 * i), echoes)
+        if i < 30:
+            assert clutter.mask("RMA1") is None  # not enough images yet
+    clutter.observe("RMA1", T0, terrain)  # an image already seen: ignored
+    mask = clutter.mask("RMA1")
+    assert mask[2, 2] and not mask[5, 3]
+
+    path = str(tmp_path / "clutter.npz")
+    clutter.save(path)
+    restored = ClutterMaps()
+    restored.load(path)
+    assert restored.mask("RMA1")[2, 2]
+    ClutterMaps().load(str(tmp_path / "missing.npz"))  # no file yet: fine

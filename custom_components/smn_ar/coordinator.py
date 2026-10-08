@@ -40,6 +40,8 @@ from .const import (
     SHORTTERM_SCAN_INTERVAL,
 )
 from .nowcast import (
+    CLUTTER,
+    CLUTTER_FILE,
     Nowcast,
     fetch_infrared_field,
     fetch_radar_field,
@@ -479,6 +481,9 @@ class ArgentinaSMNDataUpdateCoordinator(DataUpdateCoordinator[ArgentinaSMNData])
         )
 
 
+_CLUTTER_LOADED_KEY = f"{DOMAIN}_clutter_loaded"
+
+
 class SMNNowcastCoordinator(DataUpdateCoordinator[Nowcast | None]):
     """Nowcast for the location (see nowcast.py), every NOWCAST_UPDATE_INTERVAL.
 
@@ -504,12 +509,25 @@ class SMNNowcastCoordinator(DataUpdateCoordinator[Nowcast | None]):
             update_interval=timedelta(seconds=NOWCAST_UPDATE_INTERVAL),
         )
 
+    async def _async_clutter_maps(self) -> None:
+        """Load the radars' learned clutter (nowcast.ClutterMaps) once per run, then save it.
+
+        Saved on every refresh it changed in: the camera adds to it too.
+        """
+        path = self.hass.config.path(".storage", CLUTTER_FILE)
+        if not self.hass.data.get(_CLUTTER_LOADED_KEY):
+            self.hass.data[_CLUTTER_LOADED_KEY] = True
+            await self.hass.async_add_executor_job(CLUTTER.load, path)
+        else:
+            await self.hass.async_add_executor_job(CLUTTER.save, path)
+
     async def _async_update_data(self) -> Nowcast | None:
         try:
             import numpy  # noqa: F401
         except ImportError:
             _LOGGER.warning("numpy not available, no nowcast for the next rain")
             return None
+        await self._async_clutter_maps()
         session = async_get_clientsession(self.hass)
         smn_data = self._smn_coordinator.data
         steering = steering_motion(smn_data.open_meteo_hourly if smn_data else None)
