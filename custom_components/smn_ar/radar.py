@@ -18,7 +18,7 @@ import io
 import logging
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -33,6 +33,7 @@ from .const import (
     BASEMAP_USER_AGENT,
     CONDITION_ID_MAP,
     CONDITION_LABELS_ES,
+    GIBS_MAX_ZOOM_INFRARED,
     RADAR_ANIMATION_FRAMES,
     RADAR_COLOR_SCHEME,
     RADAR_TILE_GRID,
@@ -612,6 +613,10 @@ class RadarFrame:
     when: datetime  # UTC
     radar: Any | None  # RainViewer layer at its own zoom (see _fetch_radar_layer)
     cloud_tops: Any | None  # infrared raster (see satellite.cold_cloud_tops_layer)
+    # SINARAME images per radar for this frame, newest first: its own and
+    # the previous couple of slots, since some radars interleave scans
+    # that are pure artifacts (render_radar_frames draws the first good one).
+    sinarame: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -622,6 +627,11 @@ class RadarLayers:
     center_y: int
     basemap: Any
     frames: list[RadarFrame]  # oldest first
+    sinarame_radars: list[str] = field(default_factory=list)  # the ones with images
+
+
+# How far back a frame looks for a usable SINARAME image of each radar.
+_SINARAME_FRAME_FALLBACK = 2  # 10-min slots
 
 
 async def fetch_radar_layers(
@@ -629,26 +639,49 @@ async def fetch_radar_layers(
 ) -> RadarLayers:
     """Download the basemap once, plus each frame's radar and infrared layers.
 
-    Frame times are RainViewer's (10 min apart). If RainViewer is down, the
-    animation still shows the infrared over the last RADAR_ANIMATION_FRAMES
-    10-minute slots.
+    With SINARAME radars covering the map (see nowcast.py), the frames are
+    theirs: the last RADAR_ANIMATION_FRAMES 10-min slots up to their
+    newest image, ~25 min behind. RainViewer and the infrared stay under
+    them, matched by time. Without any SINARAME image, frame times are
+    RainViewer's (10 min apart) as before; and if RainViewer is down too,
+    the animation still shows the infrared over the last
+    RADAR_ANIMATION_FRAMES 10-minute slots.
     """
-    # Imported here: satellite.py imports this module's tile math.
+    # Imported here: satellite.py and nowcast.py import this module.
+    from .nowcast import fetch_sinarame_frames, sinarame_radars_in_view
     from .satellite import fetch_cold_cloud_tops_rasters
 
-    try:
-        host, paths = await _fetch_frame_paths(session)
-    except (aiohttp.ClientError, KeyError) as err:
-        _LOGGER.warning("Error fetching RainViewer frame index: %s", err)
-        host, paths = None, []
-    if paths:
+    center_x, center_y = _deg2tile(latitude, longitude, RADAR_ZOOM)
+    sinarame_radars = sinarame_radars_in_view(*_viewport_bounds(center_x, center_y))
+
+    async def rainviewer_paths() -> tuple[str | None, list[tuple[datetime, str]]]:
+        try:
+            return await _fetch_frame_paths(session)
+        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError) as err:
+            _LOGGER.warning("Error fetching RainViewer frame index: %s", err)
+            return None, []
+
+    (host, paths), *sinarame_images = await asyncio.gather(
+        rainviewer_paths(),
+        *(
+            fetch_sinarame_frames(session, radar_id, RADAR_ANIMATION_FRAMES + _SINARAME_FRAME_FALLBACK + 4)
+            for radar_id in sinarame_radars
+        ),
+    )
+    sinarame_by_radar = {
+        radar_id: images for radar_id, images in zip(sinarame_radars, sinarame_images) if images
+    }
+    newest_sinarame = max((max(images) for images in sinarame_by_radar.values()), default=None)
+    if newest_sinarame is not None:
+        times = [newest_sinarame - timedelta(minutes=10 * i) for i in reversed(range(RADAR_ANIMATION_FRAMES))]
+    elif paths:
         times = [when for when, _ in paths]
     else:
         now = datetime.now(timezone.utc)
         aligned = now.replace(minute=now.minute // 10 * 10, second=0, microsecond=0)
         times = [aligned - timedelta(minutes=10 * i) for i in reversed(range(RADAR_ANIMATION_FRAMES))]
+    paths = [(when, path) for when, path in paths if when in times]
 
-    center_x, center_y = _deg2tile(latitude, longitude, RADAR_ZOOM)
     half = RADAR_TILE_GRID // 2
     basemap, cloud_tops, radar_layers = await asyncio.gather(
         _fetch_basemap_mosaic(session, center_x, center_y),
@@ -664,16 +697,90 @@ async def fetch_radar_layers(
             *(_fetch_radar_layer(session, host, path, center_x, center_y) for _, path in paths)
         ),
     )
-    radar_by_time = dict(zip(times, radar_layers)) if paths else {}
+    radar_by_time = {when: layer for (when, _), layer in zip(paths, radar_layers)}
+
+    def sinarame_for(when: datetime) -> dict[str, list[Any]]:
+        candidates = {}
+        for radar_id, images in sinarame_by_radar.items():
+            recent = [
+                images[when - timedelta(minutes=10 * i)]
+                for i in range(_SINARAME_FRAME_FALLBACK + 1)
+                if when - timedelta(minutes=10 * i) in images
+            ]
+            if recent:
+                candidates[radar_id] = recent
+        return candidates
+
     return RadarLayers(
         center_x,
         center_y,
         basemap,
         [
-            RadarFrame(when, radar_by_time.get(when), clouds)
+            RadarFrame(when, radar_by_time.get(when), clouds, sinarame_for(when))
             for when, clouds in zip(times, cloud_tops)
         ],
+        [radar_id for radar_id in sinarame_radars if radar_id in sinarame_by_radar],
     )
+
+
+def _sinarame_layer(
+    frame_data: RadarFrame,
+    radar_ids: list[str],
+    size: int,
+    origin_x: float,
+    origin_y: float,
+    decoded: dict[tuple[str, int, int], Any],
+) -> Any | None:
+    """The SINARAME radars of one frame, on the map's pixels, or None if none is usable.
+
+    Where radars overlap, the strongest echo wins (the usual composite,
+    like the viewer's own CMAX): drawing the nearest on top would cut
+    another's rain with a straight edge. Needs the frame's infrared, to
+    filter out interference (see nowcast.sinarame_dbz): without it, the
+    frame keeps just RainViewer. `decoded` caches the filtered dBZ across
+    frames sharing an image and infrared raster.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from .nowcast import SINARAME_RADARS, colorize_dbz, sinarame_dbz
+
+    infrared = frame_data.cloud_tops
+    if infrared is None or not frame_data.sinarame:
+        return None
+    scale = 2.0 ** (GIBS_MAX_ZOOM_INFRARED - RADAR_ZOOM)
+    infrared_origin = (origin_x * scale, origin_y * scale)
+    composite = None
+    for radar_id in radar_ids:
+        dbz = None
+        for image in frame_data.sinarame.get(radar_id, []):
+            key = (radar_id, id(image), id(infrared))
+            if key not in decoded:
+                decoded[key] = sinarame_dbz(radar_id, image, infrared, infrared_origin)
+            dbz = decoded[key]
+            if dbz is not None:
+                break
+        if dbz is None:
+            continue
+        _, south, west, north, east = SINARAME_RADARS[radar_id]
+        x0, y0 = _deg2pixel(north, west, RADAR_ZOOM)
+        x1, y1 = _deg2pixel(south, east, RADAR_ZOOM)
+        width, height = round(x1 - x0), round(y1 - y0)
+        resized = np.asarray(Image.fromarray(dbz, mode="F").resize((width, height), Image.NEAREST))
+        # The part of the radar's square that falls on the map.
+        left, top = round(x0 - origin_x), round(y0 - origin_y)
+        mx0, my0 = max(left, 0), max(top, 0)
+        mx1, my1 = min(left + width, size), min(top + height, size)
+        if mx0 >= mx1 or my0 >= my1:
+            continue
+        if composite is None:
+            composite = np.zeros((size, size), dtype=np.float32)
+        np.maximum(
+            composite[my0:my1, mx0:mx1],
+            resized[my0 - top : my1 - top, mx0 - left : mx1 - left],
+            out=composite[my0:my1, mx0:mx1],
+        )
+    return None if composite is None else colorize_dbz(composite)
 
 
 def render_radar_frames(
@@ -740,6 +847,7 @@ def render_radar_frames(
     total = len(layers.frames)
     timeline_height = _caption_bar_height(size, total > 1)
 
+    decoded: dict[tuple[str, int, int], Any] = {}
     frames = []
     for i, (frame_data, clouds) in enumerate(zip(layers.frames, cloud_layers)):
         frame = layers.basemap.copy()
@@ -752,6 +860,10 @@ def render_radar_frames(
             if radar.size != frame.size:
                 radar = radar.resize(frame.size, Image.NEAREST)
             frame.alpha_composite(radar)
+        # SINARAME over RainViewer: in Argentina it's the one that sees the rain.
+        sinarame = _sinarame_layer(frame_data, layers.sinarame_radars, size, origin_x, origin_y, decoded)
+        if sinarame is not None:
+            frame.alpha_composite(sinarame)
         if rings:
             draw_region_overlay(
                 frame, rings, lambda lat, lon: _deg2pixel(lat, lon, RADAR_ZOOM), origin_x, origin_y

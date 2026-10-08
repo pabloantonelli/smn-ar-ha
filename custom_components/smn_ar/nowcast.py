@@ -662,7 +662,8 @@ _SINARAME_LEGEND = (
     "3d416b 3b4f78 3d5989 3d6595 3772a6 3189bb 25a1cf 4ce132 3ab027 237219 "
     "c9d333 d69818 c50017 c1005f cb00cd e2f5ee a7ecce 88dfbd"
 ).split()
-# Artifacts seen live, and what keeps them out:
+# Artifacts seen live, and what keeps them out (plus an opening that drops
+# echoes under ~3 km across, for speckle):
 # - a radar gone wrong paints concentric rings of extreme values over most
 #   of its image (RMA8, RMA13): a frame mostly at 55 dBZ or more is dropped,
 # - interference shows up as radial streaks in clear sky (RMA2): no rain
@@ -763,6 +764,11 @@ def _sinarame_decoder(
         if active.sum() >= 500 and (dbz[active] >= _SINARAME_BROKEN_DBZ).mean() > _SINARAME_BROKEN_FRACTION:
             return None
         dbz = np.clip(dbz, 0, None)
+        # Speckle (ground clutter, a radial of interference): an opening
+        # keeps only echoes at least 3 px (~3 km) across.
+        echoes = Image.fromarray(((dbz >= _RADAR_WEAK_DBZ) * 255).astype(np.uint8))
+        echoes = echoes.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+        dbz[np.asarray(echoes) == 0] = 0
         if infrared is not None:
             # Coldest cloud top within reach of each infrared pixel.
             temperature = infrared_temperature(infrared)
@@ -795,6 +801,61 @@ async def _fetch_png(session: aiohttp.ClientSession, url: str) -> Any | None:
         return None
 
 
+async def fetch_sinarame_frames(
+    session: aiohttp.ClientSession, radar_id: str, slots: int, now: datetime | None = None
+) -> dict[datetime, Any]:
+    """A radar's images of the last `slots` 10-min slots that exist, by UTC time, oldest first.
+
+    There's no listing of the frames, so each slot is just tried.
+    """
+    now = now or datetime.now(timezone.utc)
+    local = now.astimezone(_ARG_TZ)
+    latest_slot = local.replace(minute=local.minute // 10 * 10, second=0, microsecond=0)
+    times = [latest_slot - timedelta(minutes=10 * i) for i in reversed(range(slots))]
+    images = await asyncio.gather(
+        *(_fetch_png(session, SINARAME_URL.format(radar=radar_id, stamp=t.strftime("%Y%m%d%H%M%S"))) for t in times)
+    )
+    return {t.astimezone(timezone.utc): image for t, image in zip(times, images) if image is not None}
+
+
+def sinarame_radars_in_view(min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> list[str]:
+    """SINARAME radars whose square overlaps an area, farthest from its center first.
+
+    Farthest first so that, drawn in this order, the nearest radar ends up
+    on top where they overlap.
+    """
+    center_lat, center_lon = (min_lat + max_lat) / 2, (min_lon + max_lon) / 2
+    found = []
+    for radar_id, (_, south, west, north, east) in SINARAME_RADARS.items():
+        if south <= max_lat and north >= min_lat and west <= max_lon and east >= min_lon:
+            distance = math.hypot((south + north) / 2 - center_lat, (west + east) / 2 - center_lon)
+            found.append((distance, radar_id))
+    return [radar_id for _, radar_id in sorted(found, reverse=True)]
+
+
+def sinarame_dbz(radar_id: str, image: Any, infrared: Any, infrared_origin: tuple[float, float]) -> Any | None:
+    """One radar image decoded and filtered (see _sinarame_decoder), or None if it's an artifact scan."""
+    return _sinarame_decoder(SINARAME_RADARS[radar_id][1:], infrared_origin)((image, infrared))
+
+
+def colorize_dbz(dbz: Any) -> Any:
+    """dBZ array -> RGBA image in RainViewer's Universal Blue, transparent below 15 dBZ.
+
+    So a SINARAME radar reads like the RainViewer one on the same map.
+    """
+    import numpy as np
+    from PIL import Image
+
+    palette = np.array(
+        [[int(h[i : i + 2], 16) for i in (0, 2, 4)] for h in _RADAR_PALETTE], dtype=np.uint8
+    )
+    index = np.clip(np.round(dbz).astype(int) - _RADAR_PALETTE_START_DBZ, 0, len(palette) - 1)
+    rgba = np.zeros((*dbz.shape, 4), dtype=np.uint8)
+    rgba[..., :3] = palette[index]
+    rgba[..., 3] = np.where(dbz >= _RADAR_PALETTE_START_DBZ, 255, 0)
+    return Image.fromarray(rgba, mode="RGBA")
+
+
 async def fetch_sinarame_field(
     session: aiohttp.ClientSession,
     radar_id: str,
@@ -810,14 +871,7 @@ async def fetch_sinarame_field(
     """
     name, south, west, north, east = SINARAME_RADARS[radar_id]
     bounds = (south, west, north, east)
-    now = now or datetime.now(timezone.utc)
-    local = now.astimezone(_ARG_TZ)
-    latest_slot = local.replace(minute=local.minute // 10 * 10, second=0, microsecond=0)
-    slots = [latest_slot - timedelta(minutes=10 * i) for i in reversed(range(_SINARAME_LOOKBACK_SLOTS))]
-    images = await asyncio.gather(
-        *(_fetch_png(session, SINARAME_URL.format(radar=radar_id, stamp=slot.strftime("%Y%m%d%H%M%S"))) for slot in slots)
-    )
-    available = [(slot.astimezone(timezone.utc), image) for slot, image in zip(slots, images) if image is not None]
+    available = list((await fetch_sinarame_frames(session, radar_id, _SINARAME_LOOKBACK_SLOTS, now)).items())
     available = available[-_SINARAME_FRAMES:]
     if not available:
         return None

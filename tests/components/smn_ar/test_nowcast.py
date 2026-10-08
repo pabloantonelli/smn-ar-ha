@@ -203,3 +203,21 @@ def test_sinarame_needs_clouds_for_rain_and_cold_tops_for_storms() -> None:
     capped = decode((storm, infrared((190, 190, 190))))  # about -16 °C
     assert 20 <= capped.max() < 45  # rain, but no storm without cold tops
     assert decode((storm, infrared((255, 0, 0)))).max() == 45  # -61 °C
+
+
+def test_sinarame_radars_in_view_nearest_last() -> None:
+    from custom_components.smn_ar.nowcast import sinarame_radars_in_view
+
+    radars = sinarame_radars_in_view(-36.0, -60.0, -33.5, -57.0)  # around Buenos Aires
+    assert radars[-1] == "RMA2"
+    assert "RMA14" in radars
+    assert sinarame_radars_in_view(-60.0, -45.0, -59.0, -44.0) == []
+
+
+def test_colorize_dbz_like_rainviewer() -> None:
+    from custom_components.smn_ar.nowcast import colorize_dbz, decode_radar
+
+    dbz = np.array([[0, 10, 20, 45]], dtype=np.float32)
+    image = colorize_dbz(dbz)
+    assert [image.getpixel((x, 0))[3] for x in range(4)] == [0, 0, 255, 255]
+    assert decode_radar(image).tolist() == [[0, 0, 20, 45]]

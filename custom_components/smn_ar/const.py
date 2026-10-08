@@ -85,7 +85,8 @@ BASEMAP_USER_AGENT: Final = (
     "smn-ar-ha-radar/1.0 (+https://github.com/pabloantonelli/smn-ar-ha)"
 )
 RAINVIEWER_ATTRIBUTION: Final = (
-    "Weather data by RainViewer (rainviewer.com) · Map © OpenStreetMap contributors"
+    "Radar: SINARAME (radares.hidricosargentina.gob.ar) and RainViewer (rainviewer.com) · "
+    "Map © OpenStreetMap contributors"
 )
 # Spanish labels for HA condition strings, used to caption the radar
 # snapshot image (drawn with Pillow, not HA's own translation system —
