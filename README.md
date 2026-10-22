@@ -113,7 +113,8 @@ meteorológica"):
 ## Próxima lluvia o tormenta
 
 El estado es un horario: Home Assistant lo muestra como "en 40 minutos" y
-queda vacío si no hay nada a la vista. Se queda con lo más próximo de cinco
+queda vacío si no hay nada a la vista. Es la hora más probable, no una
+certeza: mirá el atributo `probabilidad`. Se queda con lo más próximo de cinco
 fuentes:
 
 1. **Radar o satélite (nowcast)**: toma las últimas imágenes alrededor de tu
@@ -160,6 +161,14 @@ radar, lo que ve el radar manda en sus 2 horas.
 
 Atributos principales:
 
+- **`probabilidad`**: es una estimación, no una certeza. Este número dice
+  cuántas veces llovió de verdad cuando esa fuente avisó así, medido contra
+  un año de observaciones de 15 aeropuertos. Los pronósticos exageran: cuando
+  Open-Meteo dice 60% para una hora, llueve dentro de esa hora ±1 el 44% de
+  las veces. Satélite con topes fríos encima: ~80%. Franja del SMN o alerta
+  confirmada por Open-Meteo: 39–84%, según la hora que la confirma. Queda
+  vacío donde no se pudo medir (radar, avisos, una llegada proyectada).
+  `probability` es en cambio el máximo del rango que da el SMN para la franja.
 - **`tipo`**: `lluvia` o `tormenta`.
 - **`fuente`**: `radar SINARAME <radar>`, `radar`, `satélite infrarrojo`,
   `aviso cercano`, `alerta de zona`, `pronóstico horario` o `pronóstico`.

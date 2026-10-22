@@ -44,15 +44,18 @@ from .const import (
     ALERT_LEVEL_MAP,
     DOMAIN,
     NEXT_RAIN_HOURLY_MIN_PRECIPITATION,
+    NEXT_RAIN_HOURLY_ODDS,
     NEXT_RAIN_HOURLY_PROBABILITY,
     NEXT_RAIN_HOURLY_STORM_PROBABILITY,
+    NEXT_RAIN_PERIOD_ODDS,
     NEXT_RAIN_PROBABILITY_THRESHOLD,
     NEXT_RAIN_REFINE_MIN_PRECIPITATION,
     NEXT_RAIN_REFINE_PROBABILITY,
+    NEXT_RAIN_SATELLITE_ODDS,
     wind_cardinal,
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
-from .nowcast import SOURCE_RADAR, Nowcast, aviso_arrival, steering_motion
+from .nowcast import SOURCE_RADAR, SOURCE_SATELLITE, Nowcast, aviso_arrival, steering_motion
 from .weather import format_condition
 
 _LOGGER = logging.getLogger(__name__)
@@ -115,6 +118,13 @@ def _hourly_is_rain(hour: dict[str, Any]) -> str | None:
     return None
 
 
+def _odds(table: tuple[tuple[int, int], ...], probability: float | None) -> int | None:
+    """The measured % for a forecast probability (see NEXT_RAIN_HOURLY_ODDS)."""
+    if probability is None:
+        return None
+    return next(odds for minimum, odds in table if probability >= minimum)
+
+
 def find_next_rain_or_storm(
     hourly_forecast: list[dict[str, Any]],
     alerts: dict[str, Any] | None,
@@ -146,6 +156,10 @@ def find_next_rain_or_storm(
     the period). Where there's radar, the forecasts and zone alerts only
     count past its horizon. The earliest wins; anything already
     under way counts as "now", and ties go to the stronger source.
+
+    `odds` is how often it rained when a source said so like this (see
+    NEXT_RAIN_HOURLY_ODDS), None where that couldn't be measured: the
+    radar, the avisos, a projected arrival.
     """
     now = now or datetime.now(_ARG_TZ)
     open_meteo_hourly = open_meteo_hourly or []
@@ -154,14 +168,14 @@ def find_next_rain_or_storm(
     motion = (nowcast.motion if nowcast else None) or steering_motion(open_meteo_hourly, now)
     candidates: list[dict[str, Any]] = []
 
-    def refine(start: datetime) -> datetime | None:
-        """First not-yet-past hour of a 6-hour period Open-Meteo gives some rain in.
+    def refine(start: datetime) -> dict[str, Any] | None:
+        """`when` and `odds` from the first not-yet-past hour of a 6-hour period Open-Meteo gives some rain in.
 
         None when it gives none (see NEXT_RAIN_REFINE_PROBABILITY); the
         period's start when there's no Open-Meteo to tell.
         """
         if not open_meteo_hourly:
-            return start
+            return {"when": start, "odds": None}
         for hour in open_meteo_hourly:
             if (
                 start <= hour["when"] < start + _PERIOD
@@ -169,7 +183,7 @@ def find_next_rain_or_storm(
                 and (hour.get("probability") or 0) >= NEXT_RAIN_REFINE_PROBABILITY
                 and (hour.get("precipitation") or 0) >= NEXT_RAIN_REFINE_MIN_PRECIPITATION
             ):
-                return hour["when"]
+                return {"when": hour["when"], "odds": _odds(NEXT_RAIN_PERIOD_ODDS, hour.get("probability"))}
         return None
 
     if nowcast is not None and nowcast.arrival is not None:
@@ -182,6 +196,12 @@ def find_next_rain_or_storm(
                 "distance_km": nowcast.distance_km,
                 "direction": wind_cardinal(nowcast.from_deg),
                 "intensity": nowcast.intensity,
+                # Measured for cold tops already over the location only.
+                "odds": (
+                    NEXT_RAIN_SATELLITE_ODDS
+                    if nowcast.source == SOURCE_SATELLITE and not nowcast.distance_km
+                    else None
+                ),
             }
         )
 
@@ -207,11 +227,11 @@ def find_next_rain_or_storm(
 
     for event_id, tipo in ((_STORM_EVENT_ID, "tormenta"), (_RAIN_EVENT_ID, "lluvia")):
         for start, level in alert_periods(alerts, event_id, now):
-            if (when := refine(start)) is None:
+            if (refined := refine(start)) is None:
                 continue
             candidates.append(
                 {
-                    "when": when,
+                    **refined,
                     "tipo": tipo,
                     "source": _SOURCE_ALERT,
                     "level": level,
@@ -228,6 +248,7 @@ def find_next_rain_or_storm(
                 "tipo": _hourly_is_rain(hour),
                 "source": _SOURCE_HOURLY,
                 "hourly_probability": hour.get("probability"),
+                "odds": _odds(NEXT_RAIN_HOURLY_ODDS, hour.get("probability")),
             }
         )
 
@@ -246,9 +267,9 @@ def find_next_rain_or_storm(
         storm = condition == ATTR_CONDITION_LIGHTNING_RAINY
         if not storm and (likelihood is None or likelihood < NEXT_RAIN_PROBABILITY_THRESHOLD):
             continue
-        if (start := refine(when)) is None:
+        if (refined := refine(when)) is None:
             continue
-        candidates.append({"when": start, "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST})
+        candidates.append({**refined, "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST})
 
     if nowcast is not None and nowcast.source.startswith(SOURCE_RADAR):
         # The radar sees the rain itself: within its horizon, a forecast
@@ -693,7 +714,9 @@ class SMNNextRainSensor(_SMNSensorBase):
                 f"tormenta a menos de {self._radius_km:g} km que se mueve hacia tu ubicación, "
                 "el pronóstico horario de Open-Meteo, y una alerta de lluvia o tormenta para tu zona "
                 f"o el pronóstico del SMN (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% o más de "
-                "probabilidad, o tormenta) cuando Open-Meteo también da lluvia en esa franja"
+                "probabilidad, o tormenta) cuando Open-Meteo también da lluvia en esa franja. "
+                "Es una estimación, no una certeza: `probabilidad` dice cuántas veces llovió de verdad "
+                "cuando esa fuente avisó así (medido contra observaciones de aeropuertos)"
             ),
             "rain_expected": next_any is not None,
             "proxima_tormenta": next_storm["when"].isoformat() if next_storm else None,
@@ -709,6 +732,7 @@ class SMNNextRainSensor(_SMNSensorBase):
                 # when it started, so it reads "hace X" on a dashboard.
                 "en_curso": next_any["when"] <= now,
                 "minutos": max(0, round((next_any["when"] - now).total_seconds() / 60)),
+                "probabilidad": next_any.get("odds"),
                 "probability": next_any.get("probability"),
                 "condition": next_any.get("condition"),
             }

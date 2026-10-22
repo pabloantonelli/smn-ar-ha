@@ -125,6 +125,8 @@ async def test_entity_attributes(hass, enable_custom_integrations, freezer) -> N
     assert state.attributes["tipo"] == "lluvia"
     assert state.attributes["fuente"] == "pronóstico"
     assert state.attributes["en_curso"] is False
+    assert state.attributes["probabilidad"] is None  # no Open-Meteo to measure it by
+    assert "no una certeza" in state.attributes["criterio"]
     assert state.attributes["proxima_tormenta"] == "2026-10-07T18:00:00-03:00"
     assert "30 km" in state.attributes["criterio"]
 
@@ -157,6 +159,7 @@ def test_hourly_forecast_refines_the_smn_period() -> None:
     assert next_any["source"][1] == "pronóstico"
     assert next_any["when"] == datetime(2026, 10, 7, 15, 0, tzinfo=ARG)
     assert next_any["probability"] == 70  # still the SMN period's
+    assert next_any["odds"] == 39  # how often it rained after a 30% hour like that
 
 
 def test_smn_period_and_alert_need_open_meteo_rain() -> None:
@@ -174,6 +177,7 @@ def test_hourly_forecast_alone() -> None:
     next_any, next_storm = _find_with(open_meteo_hourly=open_meteo_hourly)
     assert next_any["source"][1] == "pronóstico horario"
     assert next_any["when"] == datetime(2026, 10, 7, 10, 0, tzinfo=ARG)
+    assert next_any["odds"] == 44  # Open-Meteo's 60% rains less often than that
     assert next_storm["when"] == datetime(2026, 10, 7, 11, 0, tzinfo=ARG)
 
 
@@ -198,6 +202,7 @@ def test_nowcast_wins_with_its_details() -> None:
     assert next_any["when"] == NOW + timedelta(minutes=35)
     assert next_any["direction"] == "WNW"
     assert next_any["motion"].speed_kmh == 45
+    assert next_any["odds"] is None  # a projected arrival: not measured
 
 
 def test_aviso_carried_by_the_wind() -> None:
@@ -241,5 +246,6 @@ def test_stale_or_finished_nowcast_is_ignored() -> None:
         )
 
     assert _find_with(nowcast=nowcast(30))[0]["source"][1] == "satélite infrarrojo"
+    assert _find_with(nowcast=nowcast(30))[0]["odds"] == 80  # cold tops over the location
     assert _find_with(nowcast=nowcast(180)) == (None, None)  # the source kept failing
     assert _find_with(nowcast=nowcast(30, until=-5)) == (None, None)  # already went past
