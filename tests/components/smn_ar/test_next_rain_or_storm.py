@@ -159,6 +159,16 @@ def test_hourly_forecast_refines_the_smn_period() -> None:
     assert next_any["probability"] == 70  # still the SMN period's
 
 
+def test_smn_period_and_alert_need_open_meteo_rain() -> None:
+    # Open-Meteo dry all day: neither the rainy SMN period nor the zone alert counts.
+    open_meteo_hourly = [_hour(h, 10, 0.0) for h in range(6, 24)]
+    alerts = _alerts(41, {"early_morning": None, "morning": 3, "afternoon": 3, "night": 1})
+    assert _find_with([_period("12:00", 89, [70, 100])], alerts, open_meteo_hourly=open_meteo_hourly) == (None, None)
+    # A probable hour with hardly any rain doesn't confirm it either.
+    open_meteo_hourly[8] = _hour(14, 50, 0.0)
+    assert _find_with([_period("12:00", 73, [40, 70])], open_meteo_hourly=open_meteo_hourly) == (None, None)
+
+
 def test_hourly_forecast_alone() -> None:
     open_meteo_hourly = [_hour(9, 10, 0.0), _hour(10, 60, 2.0), _hour(11, 50, 1.0, code=95)]
     next_any, next_storm = _find_with(open_meteo_hourly=open_meteo_hourly)

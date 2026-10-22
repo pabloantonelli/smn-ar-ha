@@ -134,7 +134,7 @@ fuentes:
    - **Radar de RainViewer** donde no llega el SINARAME y RainViewer tiene
      cobertura (casi sólo el litoral del río Uruguay).
    - **Satélite infrarrojo** (GOES-East) en el resto del país. Ve los topes
-     fríos de las tormentas (-52 °C o menos), pero no la lluvia débil de
+     fríos de las tormentas (-58 °C o menos), pero no la lluvia débil de
      nubes más bajas ni una tormenta que todavía no se formó: para eso
      quedan los pronósticos.
    - Si las imágenes no alcanzan para medir el movimiento, o el satélite
@@ -146,14 +146,17 @@ fuentes:
 3. **Alerta de zona**: de lluvia o tormenta, por franja, para hoy y los
    próximos días.
 4. **Pronóstico horario** de [Open-Meteo](https://open-meteo.com): una hora
-   con 40% o más de probabilidad y al menos 0,2 mm, o con tormenta.
+   con 60% o más de probabilidad y al menos 0,1 mm, o con tormenta.
 5. **Pronóstico del SMN** de tu localidad: una franja con lluvia probable
    (el medio del rango de probabilidad en 40% o más; "10–30%" no cuenta) o
    con tormenta aunque la probabilidad sea baja.
 
-Las franjas del SMN y las alertas duran 6 horas: dentro de una, se toma la
-primera hora en que Open-Meteo da algo de lluvia, en vez del comienzo de la
-franja. Donde hay radar, lo que ve el radar manda en sus 2 horas.
+Las franjas del SMN y las alertas duran 6 horas y abarcan toda una zona: sólo
+cuentan si Open-Meteo también da lluvia en alguna hora de esa franja (30% o
+más y al menos 0,1 mm), y esa hora es la que se toma como comienzo. Sin esa
+confirmación casi nunca llueve en tu ubicación: en un año de observaciones
+de 15 aeropuertos, una franja así tuvo lluvia el 2% de las veces. Donde hay
+radar, lo que ve el radar manda en sus 2 horas.
 
 Atributos principales:
 

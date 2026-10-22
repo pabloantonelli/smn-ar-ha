@@ -47,6 +47,7 @@ from .const import (
     NEXT_RAIN_HOURLY_PROBABILITY,
     NEXT_RAIN_HOURLY_STORM_PROBABILITY,
     NEXT_RAIN_PROBABILITY_THRESHOLD,
+    NEXT_RAIN_REFINE_MIN_PRECIPITATION,
     NEXT_RAIN_REFINE_PROBABILITY,
     wind_cardinal,
 )
@@ -139,10 +140,11 @@ def find_next_rain_or_storm(
     - SMN's forecast periods with rain likely (the middle of its
       probability range at NEXT_RAIN_PROBABILITY_THRESHOLD or more) or a
       storm condition, even with a low probability.
-    SMN's periods and zone alerts are 6 hours long: within one, the first
-    hour Open-Meteo gives some rain is taken as when it starts, instead of
-    the start of the period. Where there's radar, the forecasts and zone
-    alerts only count past its horizon. The earliest wins; anything already
+    SMN's periods and zone alerts are 6 hours long and cover a whole zone:
+    one only counts with an hour in it where Open-Meteo also gives some
+    rain, and that hour is when it starts (without Open-Meteo, the start of
+    the period). Where there's radar, the forecasts and zone alerts only
+    count past its horizon. The earliest wins; anything already
     under way counts as "now", and ties go to the stronger source.
     """
     now = now or datetime.now(_ARG_TZ)
@@ -152,19 +154,23 @@ def find_next_rain_or_storm(
     motion = (nowcast.motion if nowcast else None) or steering_motion(open_meteo_hourly, now)
     candidates: list[dict[str, Any]] = []
 
-    def refine(start: datetime) -> datetime:
-        """First not-yet-past hour of a 6-hour period Open-Meteo gives some rain in, or its start."""
+    def refine(start: datetime) -> datetime | None:
+        """First not-yet-past hour of a 6-hour period Open-Meteo gives some rain in.
+
+        None when it gives none (see NEXT_RAIN_REFINE_PROBABILITY); the
+        period's start when there's no Open-Meteo to tell.
+        """
+        if not open_meteo_hourly:
+            return start
         for hour in open_meteo_hourly:
             if (
                 start <= hour["when"] < start + _PERIOD
                 and hour["when"] + timedelta(hours=1) > now
-                and (
-                    (hour.get("probability") or 0) >= NEXT_RAIN_REFINE_PROBABILITY
-                    or (hour.get("precipitation") or 0) >= 0.1
-                )
+                and (hour.get("probability") or 0) >= NEXT_RAIN_REFINE_PROBABILITY
+                and (hour.get("precipitation") or 0) >= NEXT_RAIN_REFINE_MIN_PRECIPITATION
             ):
                 return hour["when"]
-        return start
+        return None
 
     if nowcast is not None and nowcast.arrival is not None:
         candidates.append(
@@ -201,9 +207,11 @@ def find_next_rain_or_storm(
 
     for event_id, tipo in ((_STORM_EVENT_ID, "tormenta"), (_RAIN_EVENT_ID, "lluvia")):
         for start, level in alert_periods(alerts, event_id, now):
+            if (when := refine(start)) is None:
+                continue
             candidates.append(
                 {
-                    "when": refine(start),
+                    "when": when,
                     "tipo": tipo,
                     "source": _SOURCE_ALERT,
                     "level": level,
@@ -238,9 +246,9 @@ def find_next_rain_or_storm(
         storm = condition == ATTR_CONDITION_LIGHTNING_RAINY
         if not storm and (likelihood is None or likelihood < NEXT_RAIN_PROBABILITY_THRESHOLD):
             continue
-        candidates.append(
-            {"when": refine(when), "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST}
-        )
+        if (start := refine(when)) is None:
+            continue
+        candidates.append({"when": start, "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST})
 
     if nowcast is not None and nowcast.source.startswith(SOURCE_RADAR):
         # The radar sees the rain itself: within its horizon, a forecast
@@ -683,9 +691,9 @@ class SMNNextRainSensor(_SMNSensorBase):
                 "Lo más próximo entre: la lluvia o tormenta que el radar (SINARAME o "
                 "RainViewer) o el satélite infrarrojo ven acercarse (hasta 2 horas), un aviso a corto plazo de lluvia o "
                 f"tormenta a menos de {self._radius_km:g} km que se mueve hacia tu ubicación, "
-                "una alerta de lluvia o tormenta para tu zona, el pronóstico horario de "
-                f"Open-Meteo y el pronóstico del SMN (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% "
-                "o más de probabilidad, o tormenta)"
+                "el pronóstico horario de Open-Meteo, y una alerta de lluvia o tormenta para tu zona "
+                f"o el pronóstico del SMN (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% o más de "
+                "probabilidad, o tormenta) cuando Open-Meteo también da lluvia en esa franja"
             ),
             "rain_expected": next_any is not None,
             "proxima_tormenta": next_storm["when"].isoformat() if next_storm else None,

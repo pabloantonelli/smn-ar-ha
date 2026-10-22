@@ -35,8 +35,8 @@ from .const import (
     CONDITION_ID_MAP,
     DOMAIN,
     FORECAST_MAP,
-    NEXT_RAIN_HOURLY_MIN_PRECIPITATION,
-    NEXT_RAIN_HOURLY_PROBABILITY,
+    HOURLY_TRACE_PRECIPITATION,
+    HOURLY_TRACE_PROBABILITY,
     OPEN_METEO_ATTRIBUTION,
     WMO_CONDITION_MAP,
 )
@@ -103,8 +103,8 @@ def open_meteo_hourly_forecast(
         condition = WMO_CONDITION_MAP.get(hour.get("weather_code"))
         if (
             condition in (ATTR_CONDITION_RAINY, ATTR_CONDITION_POURING)
-            and (hour.get("probability") or 0) < NEXT_RAIN_HOURLY_PROBABILITY
-            and (hour.get("precipitation") or 0) < NEXT_RAIN_HOURLY_MIN_PRECIPITATION
+            and (hour.get("probability") or 0) < HOURLY_TRACE_PROBABILITY
+            and (hour.get("precipitation") or 0) < HOURLY_TRACE_PRECIPITATION
         ):
             # The model's "drizzle" with a trace and a low probability: show
             # the clouds instead of a rainy hour.

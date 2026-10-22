@@ -115,7 +115,10 @@ _IR_PALETTE = [
 ]
 # Infrared fields are "coldness": degrees below 0 °C of the cloud top, so
 # that, like dBZ, more is more rain.
-IR_RAIN_COLDNESS = 52  # tops at -52 °C or colder: deep convection, raining under it
+# Tops at -58 °C or colder: deep convection, raining under it. Checked
+# against METARs at 15 airports (Jul-Oct 2026): with -52 °C, 40-47% of
+# the times it said rain it didn't rain; with -58 °C, 13-23%.
+IR_RAIN_COLDNESS = 58
 IR_STORM_COLDNESS = 62
 _IR_WEAK_COLDNESS = 40
 _IR_GRAY_CORE_COLDNESS = 75

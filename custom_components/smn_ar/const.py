@@ -369,13 +369,22 @@ WIND_CARDINAL_DIRECTIONS: Final = [
 NEXT_RAIN_PROBABILITY_THRESHOLD: Final = 40
 # Open-Meteo's hourly forecast (see OPEN_METEO_URL): an hour counts as rain
 # with this probability and amount, or as a storm (weather code 95-99) with
-# NEXT_RAIN_HOURLY_STORM_PROBABILITY.
-NEXT_RAIN_HOURLY_PROBABILITY: Final = 40  # %
-NEXT_RAIN_HOURLY_MIN_PRECIPITATION: Final = 0.2  # mm
+# NEXT_RAIN_HOURLY_STORM_PROBABILITY. Checked against a year of METARs at 15
+# airports: rain within 3 h of an hour that passes comes ~60% of the time;
+# 40% and 0.2 mm caught fewer rains with more false alarms.
+NEXT_RAIN_HOURLY_PROBABILITY: Final = 60  # %
+NEXT_RAIN_HOURLY_MIN_PRECIPITATION: Final = 0.1  # mm
 NEXT_RAIN_HOURLY_STORM_PROBABILITY: Final = 30  # %
-# Within an SMN period or zone alert that already says rain, the first hour
-# Open-Meteo gives at least this much is taken as when it starts.
-NEXT_RAIN_REFINE_PROBABILITY: Final = 20  # %
+# The weather entity's hourly forecast shows a "drizzle" hour under both
+# of these as clouds instead (a trace the model gives little chance to).
+HOURLY_TRACE_PROBABILITY: Final = 40  # %
+HOURLY_TRACE_PRECIPITATION: Final = 0.2  # mm
+# An SMN period or zone alert that says rain only counts with an hour in it
+# where Open-Meteo gives at least this much (that hour being when it
+# starts): in the same METARs, a 6-hour period with no such hour rained 2%
+# of the time, one with it 60%.
+NEXT_RAIN_REFINE_PROBABILITY: Final = 30  # %
+NEXT_RAIN_REFINE_MIN_PRECIPITATION: Final = 0.1  # mm
 
 # Nowcast (nowcast.py): how far ahead it extrapolates the radar/infrared,
 # how far around the location it looks, and how close counts as "here".
