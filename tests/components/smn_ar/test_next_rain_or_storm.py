@@ -159,7 +159,7 @@ def test_hourly_forecast_refines_the_smn_period() -> None:
     assert next_any["source"][1] == "pronóstico"
     assert next_any["when"] == datetime(2026, 10, 7, 15, 0, tzinfo=ARG)
     assert next_any["probability"] == 70  # still the SMN period's
-    assert next_any["odds"] == 39  # how often it rained after a 30% hour like that
+    assert next_any["odds"] == 42  # how often it rained after a 30% hour like that
 
 
 def test_smn_period_and_alert_need_open_meteo_rain() -> None:
@@ -177,7 +177,7 @@ def test_hourly_forecast_alone() -> None:
     next_any, next_storm = _find_with(open_meteo_hourly=open_meteo_hourly)
     assert next_any["source"][1] == "pronóstico horario"
     assert next_any["when"] == datetime(2026, 10, 7, 10, 0, tzinfo=ARG)
-    assert next_any["odds"] == 44  # Open-Meteo's 60% rains less often than that
+    assert next_any["odds"] == 47  # Open-Meteo's 60% rains less often than that
     assert next_storm["when"] == datetime(2026, 10, 7, 11, 0, tzinfo=ARG)
 
 
@@ -219,14 +219,15 @@ def test_aviso_carried_by_the_wind() -> None:
     assert issued + timedelta(minutes=15) <= next_any["when"] <= issued + timedelta(minutes=40)
 
 
-def test_radar_overrides_forecasts_within_its_horizon() -> None:
+def test_forecasts_count_within_a_dry_radar_horizon() -> None:
     from custom_components.smn_ar.nowcast import SOURCE_RADAR, Nowcast
 
+    # Drizzle and light rain are under the radar's threshold.
     horizon_end = NOW + timedelta(minutes=100)
     dry_radar = Nowcast(source=SOURCE_RADAR, frame_time=NOW - timedelta(minutes=20), horizon_end=horizon_end, motion=None)
     open_meteo_hourly = [_hour(8, 80, 3.0, code=95)]
     next_any, _ = _find_with(open_meteo_hourly=open_meteo_hourly, nowcast=dry_radar)
-    assert next_any["when"] == horizon_end
+    assert next_any["when"] == datetime(2026, 10, 7, 8, 0, tzinfo=ARG)
     assert next_any["source"][1] == "pronóstico horario"
 
 

@@ -35,6 +35,7 @@ from .const import (
     CONDITION_ID_MAP,
     DOMAIN,
     FORECAST_MAP,
+    HOURLY_RAIN_ODDS,
     HOURLY_TRACE_PRECIPITATION,
     HOURLY_TRACE_PROBABILITY,
     OPEN_METEO_ATTRIBUTION,
@@ -91,10 +92,20 @@ async def async_setup_entry(
     async_add_entities([ArgentinaSMNWeather(coordinator, config_entry)], False)
 
 
+def _hourly_odds(probability: float | None) -> int | None:
+    """Open-Meteo's probability for an hour -> how often it actually rains (see HOURLY_RAIN_ODDS)."""
+    if probability is None:
+        return None
+    return next(odds for minimum, odds in HOURLY_RAIN_ODDS if probability >= minimum)
+
+
 def open_meteo_hourly_forecast(
     hourly: list[dict[str, Any]], now: datetime | None = None
 ) -> list[Forecast]:
-    """Open-Meteo's hourly entries (coordinator.open_meteo_hourly) from the current hour on."""
+    """Open-Meteo's hourly entries (coordinator.open_meteo_hourly) from the current hour on.
+
+    The probability is the measured one (HOURLY_RAIN_ODDS), not Open-Meteo's own.
+    """
     now = now or datetime.now(timezone.utc)
     forecasts: list[Forecast] = []
     for hour in hourly:
@@ -120,7 +131,7 @@ def open_meteo_hourly_forecast(
                 native_apparent_temperature=hour.get("apparent_temperature"),
                 humidity=hour.get("humidity"),
                 native_precipitation=hour.get("precipitation"),
-                precipitation_probability=hour.get("probability"),
+                precipitation_probability=_hourly_odds(hour.get("probability")),
                 native_wind_speed=hour.get("wind_speed"),
                 native_wind_gust_speed=hour.get("wind_gust_speed"),
                 wind_bearing=hour.get("wind_bearing"),

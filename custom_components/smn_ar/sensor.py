@@ -49,6 +49,7 @@ from .const import (
     NEXT_RAIN_HOURLY_STORM_PROBABILITY,
     NEXT_RAIN_PERIOD_ODDS,
     NEXT_RAIN_PROBABILITY_THRESHOLD,
+    NEXT_RAIN_RADAR_ODDS,
     NEXT_RAIN_REFINE_MIN_PRECIPITATION,
     NEXT_RAIN_REFINE_PROBABILITY,
     NEXT_RAIN_SATELLITE_ODDS,
@@ -125,6 +126,15 @@ def _odds(table: tuple[tuple[int, int], ...], probability: float | None) -> int 
     return next(odds for minimum, odds in table if probability >= minimum)
 
 
+def _nowcast_odds(nowcast: Nowcast) -> int | None:
+    """The measured % for a nowcast: the radar by its echo, the infrared only right overhead."""
+    if nowcast.source.startswith(SOURCE_RADAR):
+        return _odds(NEXT_RAIN_RADAR_ODDS, nowcast.intensity)
+    if nowcast.source == SOURCE_SATELLITE and not nowcast.distance_km:
+        return NEXT_RAIN_SATELLITE_ODDS
+    return None
+
+
 def find_next_rain_or_storm(
     hourly_forecast: list[dict[str, Any]],
     alerts: dict[str, Any] | None,
@@ -153,13 +163,14 @@ def find_next_rain_or_storm(
     SMN's periods and zone alerts are 6 hours long and cover a whole zone:
     one only counts with an hour in it where Open-Meteo also gives some
     rain, and that hour is when it starts (without Open-Meteo, the start of
-    the period). Where there's radar, the forecasts and zone alerts only
-    count past its horizon. The earliest wins; anything already
+    the period). Where there's radar, the forecasts still count within its
+    horizon: drizzle and light rain are under its threshold (RADAR_RAIN_DBZ).
+    The earliest wins; anything already
     under way counts as "now", and ties go to the stronger source.
 
     `odds` is how often it rained when a source said so like this (see
     NEXT_RAIN_HOURLY_ODDS), None where that couldn't be measured: the
-    radar, the avisos, a projected arrival.
+    avisos, the infrared's projected arrivals.
     """
     now = now or datetime.now(_ARG_TZ)
     open_meteo_hourly = open_meteo_hourly or []
@@ -196,12 +207,7 @@ def find_next_rain_or_storm(
                 "distance_km": nowcast.distance_km,
                 "direction": wind_cardinal(nowcast.from_deg),
                 "intensity": nowcast.intensity,
-                # Measured for cold tops already over the location only.
-                "odds": (
-                    NEXT_RAIN_SATELLITE_ODDS
-                    if nowcast.source == SOURCE_SATELLITE and not nowcast.distance_km
-                    else None
-                ),
+                "odds": _nowcast_odds(nowcast),
             }
         )
 
@@ -270,14 +276,6 @@ def find_next_rain_or_storm(
         if (refined := refine(when)) is None:
             continue
         candidates.append({**refined, "tipo": "tormenta" if storm else "lluvia", "source": _SOURCE_FORECAST})
-
-    if nowcast is not None and nowcast.source.startswith(SOURCE_RADAR):
-        # The radar sees the rain itself: within its horizon, a forecast
-        # saying otherwise is the one that's off (radar coverage was checked
-        # before fetching it). Past the horizon, the forecasts take over.
-        for candidate in candidates:
-            if candidate["source"][0] <= _SOURCE_ALERT[0] and candidate["when"] < nowcast.horizon_end:
-                candidate["when"] = nowcast.horizon_end
 
     def sort_key(candidate: dict[str, Any]) -> tuple[datetime, int, int]:
         return (

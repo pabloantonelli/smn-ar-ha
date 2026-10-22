@@ -370,7 +370,7 @@ NEXT_RAIN_PROBABILITY_THRESHOLD: Final = 40
 # Open-Meteo's hourly forecast (see OPEN_METEO_URL): an hour counts as rain
 # with this probability and amount, or as a storm (weather code 95-99) with
 # NEXT_RAIN_HOURLY_STORM_PROBABILITY. Checked against a year of METARs at 15
-# airports: rain within 3 h of an hour that passes comes ~60% of the time;
+# airports: rain within 3 h of an hour that passes comes ~64% of the time;
 # 40% and 0.2 mm caught fewer rains with more false alarms.
 NEXT_RAIN_HOURLY_PROBABILITY: Final = 60  # %
 NEXT_RAIN_HOURLY_MIN_PRECIPITATION: Final = 0.1  # mm
@@ -380,20 +380,29 @@ NEXT_RAIN_HOURLY_STORM_PROBABILITY: Final = 30  # %
 HOURLY_TRACE_PROBABILITY: Final = 40  # %
 HOURLY_TRACE_PRECIPITATION: Final = 0.2  # mm
 # How often it actually rained when each source said so (the sensor's
-# `probabilidad`), from the same METARs: forecasts' probabilities run high.
-# (Open-Meteo's probability for the hour, % it rained within an hour of it),
-# first match from the top.
-NEXT_RAIN_HOURLY_ODDS: Final = ((90, 79), (80, 57), (70, 52), (60, 44), (50, 41), (40, 35), (30, 28), (0, 20))
+# `probabilidad`), from the same METARs (recent-rain codes included):
+# forecasts' probabilities run high. (Open-Meteo's probability for the
+# hour, % it rained within an hour of it), first match from the top.
+NEXT_RAIN_HOURLY_ODDS: Final = ((90, 81), (80, 60), (70, 55), (60, 47), (50, 43), (40, 38), (30, 30), (0, 22))
 # An SMN period or zone alert confirmed by Open-Meteo: (the confirming
 # hour's probability, % it rained in the rest of the period). Measured
 # without the SMN, so if anything it rains a bit more often than this.
-NEXT_RAIN_PERIOD_ODDS: Final = ((90, 84), (70, 65), (50, 54), (0, 39))
+NEXT_RAIN_PERIOD_ODDS: Final = ((90, 86), (70, 68), (50, 56), (0, 42))
 # Cold cloud tops over the location (see nowcast.IR_RAIN_COLDNESS).
 NEXT_RAIN_SATELLITE_ODDS: Final = 80
+# The radar: (echo dBZ, % it rained within 2 h), from 11 days of SINARAME
+# Córdoba in a real install against the airport's METARs (see
+# nowcast.RADAR_RAIN_DBZ). One radar and few days: rough.
+NEXT_RAIN_RADAR_ODDS: Final = ((33, 58), (0, 42))
+# The weather entity's hourly forecast shows this instead of Open-Meteo's
+# own probability: (its probability, % it rained in that very hour).
+HOURLY_RAIN_ODDS: Final = (
+    (90, 64), (80, 41), (70, 34), (60, 29), (50, 25), (40, 18), (30, 15), (20, 12), (10, 8), (0, 1)
+)
 # An SMN period or zone alert that says rain only counts with an hour in it
 # where Open-Meteo gives at least this much (that hour being when it
 # starts): in the same METARs, a 6-hour period with no such hour rained 2%
-# of the time, one with it 60%.
+# of the time, one with it 62%.
 NEXT_RAIN_REFINE_PROBABILITY: Final = 30  # %
 NEXT_RAIN_REFINE_MIN_PRECIPITATION: Final = 0.1  # mm
 

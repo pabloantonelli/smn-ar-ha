@@ -50,7 +50,7 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 
 | Nombre | Qué muestra |
 |---|---|
-| Clima (`weather`) | Clima actual y pronóstico de 7 días del SMN. El pronóstico **por hora** es de [Open-Meteo](https://open-meteo.com) (3 días), porque el del SMN viene en franjas de 6 horas; si Open-Meteo no responde, vuelven las franjas del SMN |
+| Clima (`weather`) | Clima actual y pronóstico de 7 días del SMN. El pronóstico **por hora** es de [Open-Meteo](https://open-meteo.com) (3 días), porque el del SMN viene en franjas de 6 horas; si Open-Meteo no responde, vuelven las franjas del SMN. Su probabilidad de lluvia es la medida, no la de Open-Meteo, que exagera: cuando dice 70% para una hora, llueve en esa hora el 34% de las veces |
 | Temperatura, Sensación térmica, Humedad, Velocidad y Dirección del viento | Los valores actuales, como sensores sueltos para gráficos y automatizaciones |
 | Pronóstico de hoy / de mañana | Condición, máxima y mínima |
 | Próxima lluvia o tormenta | Cuándo es la próxima lluvia o tormenta ([cómo se calcula](#próxima-lluvia-o-tormenta)) |
@@ -122,7 +122,9 @@ fuentes:
    las proyecta hasta 2 horas adelante. Da la hora con precisión de minutos.
    - **Radar del SINARAME**, la red nacional de radares (Ezeiza, Córdoba,
      Resistencia, Mar del Plata, Bahía Blanca y otros), si hay uno a menos de
-     180 km. Ve la lluvia en sí. Sale del visor público de Recursos Hídricos
+     180 km. Ve la lluvia en sí, desde unos 28 dBZ (lluvia de débil a
+     moderada): los ecos más débiles casi nunca terminaban en lluvia en el
+     suelo (ecos de las sierras, lluvia que se evapora). Sale del visor público de Recursos Hídricos
      (radares.hidricosargentina.gob.ar), que publica cada 10 minutos con unos
      25 de atraso. Esas imágenes traen artefactos (barridos con anillos,
      interferencias, ecos del terreno), así que se descartan los frames rotos,
@@ -157,17 +159,20 @@ cuentan si Open-Meteo también da lluvia en alguna hora de esa franja (30% o
 más y al menos 0,1 mm), y esa hora es la que se toma como comienzo. Sin esa
 confirmación casi nunca llueve en tu ubicación: en un año de observaciones
 de 15 aeropuertos, una franja así tuvo lluvia el 2% de las veces. Donde hay
-radar, lo que ve el radar manda en sus 2 horas.
+radar, los pronósticos siguen contando: la llovizna y la lluvia débil
+quedan por debajo de lo que el radar toma como lluvia.
 
 Atributos principales:
 
 - **`probabilidad`**: es una estimación, no una certeza. Este número dice
   cuántas veces llovió de verdad cuando esa fuente avisó así, medido contra
   un año de observaciones de 15 aeropuertos. Los pronósticos exageran: cuando
-  Open-Meteo dice 60% para una hora, llueve dentro de esa hora ±1 el 44% de
+  Open-Meteo dice 60% para una hora, llueve dentro de esa hora ±1 el 47% de
   las veces. Satélite con topes fríos encima: ~80%. Franja del SMN o alerta
-  confirmada por Open-Meteo: 39–84%, según la hora que la confirma. Queda
-  vacío donde no se pudo medir (radar, avisos, una llegada proyectada).
+  confirmada por Open-Meteo: 42–86%, según la hora que la confirma. Radar:
+  42–58% según la intensidad del eco (medido sólo con el radar de Córdoba,
+  así que es aproximado). Queda vacío donde no se pudo medir (avisos, una
+  llegada proyectada por el satélite).
   `probability` es en cambio el máximo del rango que da el SMN para la franja.
 - **`tipo`**: `lluvia` o `tormenta`.
 - **`fuente`**: `radar SINARAME <radar>`, `radar`, `satélite infrarrojo`,
@@ -180,6 +185,21 @@ Atributos principales:
 - **`velocidad_kmh`** / **`se_mueve_hacia`** / **`movimiento_segun`**: cómo se
   mueven las tormentas y de dónde salió ese dato.
 - **`proxima_tormenta`**: la próxima tormenta, aunque antes venga lluvia.
+
+### Qué tan bien le pega en tu casa
+
+`scripts/verify_next_rain.py` cruza el historial del sensor en tu Home
+Assistant con los reportes METAR del aeropuerto más cercano, y te dice por
+fuente cuántas veces llovió cuando avisó:
+
+```sh
+HA_TOKEN=<token de larga duración> python3 scripts/verify_next_rain.py \
+    --url http://homeassistant.local:8123 \
+    --entity sensor.casa_proxima_lluvia --station SACO
+```
+
+El recorder guarda 10 días por defecto. Con más días (`purge_keep_days`) hay
+más lluvias para juzgar.
 
 ## Automatizaciones
 

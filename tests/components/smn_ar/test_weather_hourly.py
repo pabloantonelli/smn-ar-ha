@@ -42,7 +42,7 @@ def test_hourly_from_the_current_hour() -> None:
         ATTR_CONDITION_LIGHTNING_RAINY,
         ATTR_CONDITION_CLEAR_NIGHT,
     ]
-    assert forecast[0]["precipitation_probability"] == 70
+    assert forecast[0]["precipitation_probability"] == 34  # Open-Meteo's 70%, as measured
     assert forecast[0]["native_precipitation"] == 1.2
     assert forecast[0]["wind_bearing"] == 200
 

@@ -89,7 +89,11 @@ _RADAR_PALETTE = (
     "ff4400 f23600 e62800 d91b00 cd0d00 c10000 a80000 8f0000 760000 5d0000 "
     "ffaaff ff9fff ff95ff ff8bff ff81ff ff77ff ff6cff ff62ff ff58ff ff4eff ffffff"
 ).split()
-RADAR_RAIN_DBZ = 20  # light rain
+# Light-to-moderate rain. Lighter echoes, checked against Córdoba airport's
+# METARs over 11 days of a real install's history (SINARAME Córdoba): 20-23
+# dBZ came with rain 15% of the time, 23-28 dBZ 27%, 28-33 dBZ 42%, 33+ 58%
+# (the sierras' clutter and rain that doesn't reach the ground).
+RADAR_RAIN_DBZ = 28
 RADAR_STORM_DBZ = 45
 _RADAR_WEAK_DBZ = 15
 
