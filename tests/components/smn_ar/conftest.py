@@ -1,28 +1,5 @@
 """Fixtures for SMN integration tests."""
-from collections.abc import Generator
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
-
-
-@pytest.fixture
-def mock_jwt_token() -> str:
-    """Return a mock JWT token."""
-    # Mock JWT token (header.payload.signature format)
-    # Payload includes exp field for expiration testing
-    return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IlRlc3QgVXNlciIsImV4cCI6OTk5OTk5OTk5OX0.signature"
-
-
-@pytest.fixture
-def mock_location_data() -> dict:
-    """Return mock location data from georef API."""
-    return {
-        "id": "4864",
-        "name": "Ciudad de Buenos Aires",
-        "department": "Comuna 1",
-        "province": "Ciudad Autónoma de Buenos Aires",
-        "coord": {"lat": -34.6217, "lon": -58.4258},
-    }
 
 
 @pytest.fixture
@@ -410,56 +387,3 @@ def mock_shortterm_alerts() -> list:
             "instructions": "1- Retirá o asegurá objetos que puedan ser arrastrados por el viento.\n2- Cerrá y alejate de puertas y ventanas.\n3- No te refugies debajo de marquesinas, carteles publicitarios, árboles o postes.\n4- Permanecé en construcciones cerradas como casas, escuelas o edificios públicos.\n5- Mantenete alejado de artefactos eléctricos y evitá el uso de teléfonos con cable.\n6- Si estás al aire libre, buscá refugio inmediato en un edificio, casa o vehículo cerrado.\n7- Para minimizar el riesgo de ser alcanzado por un rayo, no permanezcas en playas, ríos, lagunas o piletas."
         }
     ]
-
-
-@pytest.fixture
-def mock_token_manager() -> Generator[MagicMock, None, None]:
-    """Mock the SMN token manager."""
-    with patch(
-        "custom_components.smn_ar.coordinator.SMNTokenManager"
-    ) as mock_manager:
-        manager_instance = mock_manager.return_value
-        manager_instance.get_token = AsyncMock(
-            return_value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig"
-        )
-        manager_instance.fetch_token = AsyncMock(
-            return_value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig"
-        )
-        yield manager_instance
-
-
-@pytest.fixture
-def mock_aiohttp_session() -> Generator[MagicMock, None, None]:
-    """Mock aiohttp session for API calls."""
-    with patch("aiohttp.ClientSession") as mock_session:
-        session_instance = MagicMock()
-        mock_session.return_value = session_instance
-
-        # Mock response
-        mock_response = AsyncMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json = AsyncMock()
-
-        # Setup context manager
-        mock_get = AsyncMock()
-        mock_get.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_get.__aexit__ = AsyncMock()
-
-        session_instance.get = MagicMock(return_value=mock_get)
-
-        yield session_instance
-
-
-@pytest.fixture
-def mock_coordinator_data(
-    mock_current_weather, mock_forecast_data, mock_alerts_data, mock_shortterm_alerts
-) -> dict:
-    """Return mock coordinator data."""
-    return {
-        "current_weather_data": mock_current_weather,
-        "daily_forecast": mock_forecast_data.get("forecast", []),
-        "hourly_forecast": [],
-        "alerts": mock_alerts_data,
-        "shortterm_alerts": mock_shortterm_alerts,
-        "heat_warnings": {},
-    }
