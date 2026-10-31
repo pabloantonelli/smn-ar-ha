@@ -1,182 +1,59 @@
 """Test the SMN config flow."""
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.smn_ar.const import DOMAIN
+from custom_components.smn_ar.const import CONF_PROXY_URL, DOMAIN
+
+@pytest.fixture(autouse=True)
+def _no_dependencies():
+    """Loading the flow would otherwise set up `frontend`, which isn't installed for tests."""
+    with patch("homeassistant.loader.Integration.dependencies", []):
+        yield
 
 
-@pytest.mark.asyncio
-async def test_form_home_location(
-    hass: HomeAssistant, mock_token_manager, mock_location_data
-) -> None:
-    """Test we can configure with home location coordinates."""
-    # Set home location
+_INPUT = {CONF_LATITUDE: -31.4201, CONF_LONGITUDE: -64.1888, CONF_NAME: "Córdoba"}
+
+
+async def _start(hass: HomeAssistant) -> dict:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    assert result["type"] == FlowResultType.FORM
+    assert result["step_id"] == "user"
+    return result
+
+
+async def test_form_creates_entry(hass: HomeAssistant, enable_custom_integrations) -> None:
+    result = await _start(hass)
+    with patch("custom_components.smn_ar.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {**_INPUT, CONF_PROXY_URL: "http://proxy:6942/"}
+        )
+        await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Córdoba"
+    assert result["data"] == {**_INPUT, CONF_PROXY_URL: "http://proxy:6942"}  # no trailing slash
+
+
+async def test_form_defaults_to_the_home_location(hass: HomeAssistant, enable_custom_integrations) -> None:
     hass.config.latitude = -34.6217
     hass.config.longitude = -58.4258
+    result = await _start(hass)
+    defaults = {str(key): key.default() for key in result["data_schema"].schema if callable(key.default)}
+    assert defaults[CONF_LATITUDE] == -34.6217
+    assert defaults[CONF_LONGITUDE] == -58.4258
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
+
+async def test_form_already_configured(hass: HomeAssistant, enable_custom_integrations) -> None:
+    MockConfigEntry(domain=DOMAIN, data=_INPUT, unique_id="cordoba").add_to_hass(hass)
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**_INPUT, CONF_NAME: "Otro nombre", CONF_PROXY_URL: "http://proxy:6942"}
     )
     assert result["type"] == FlowResultType.FORM
-    assert result["step_id"] == "user"
-
-    with patch(
-        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
-    ) as mock_coordinator, patch(
-        "custom_components.smn_ar.async_setup_entry", return_value=True
-    ):
-        mock_coordinator_instance = mock_coordinator.return_value
-        mock_coordinator_instance._smn_data._token_manager = mock_token_manager
-        mock_coordinator_instance._smn_data.fetch_location_by_coords = AsyncMock(
-            return_value=mock_location_data
-        )
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_LATITUDE: -34.6217,
-                CONF_LONGITUDE: -58.4258,
-                CONF_NAME: "My Home",
-            },
-        )
-
-        await hass.async_block_till_done()
-
-        assert result2["type"] == FlowResultType.CREATE_ENTRY
-        assert result2["title"] == "My Home"
-        assert result2["data"] == {
-            CONF_LATITUDE: -34.6217,
-            CONF_LONGITUDE: -58.4258,
-            CONF_NAME: "My Home",
-        }
-
-
-@pytest.mark.asyncio
-async def test_form_custom_location(
-    hass: HomeAssistant, mock_token_manager, mock_location_data
-) -> None:
-    """Test we can configure with custom location."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-    assert result["type"] == FlowResultType.FORM
-    assert result["step_id"] == "user"
-
-    with patch(
-        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
-    ) as mock_coordinator, patch(
-        "custom_components.smn_ar.async_setup_entry", return_value=True
-    ):
-        mock_coordinator_instance = mock_coordinator.return_value
-        mock_coordinator_instance._smn_data._token_manager = mock_token_manager
-        mock_coordinator_instance._smn_data.fetch_location_by_coords = AsyncMock(
-            return_value=mock_location_data
-        )
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_LATITUDE: -31.4201,
-                CONF_LONGITUDE: -64.1888,
-                CONF_NAME: "Córdoba",
-            },
-        )
-
-        await hass.async_block_till_done()
-
-        assert result2["type"] == FlowResultType.CREATE_ENTRY
-        assert result2["title"] == "Córdoba"
-        assert result2["data"] == {
-            CONF_LATITUDE: -31.4201,
-            CONF_LONGITUDE: -64.1888,
-            CONF_NAME: "Córdoba",
-        }
-
-
-@pytest.mark.asyncio
-async def test_form_already_configured(
-    hass: HomeAssistant, mock_token_manager, mock_location_data
-) -> None:
-    """Test we handle already configured."""
-    # Create an existing entry
-    existing_entry = config_entries.ConfigEntry(
-        version=1,
-        minor_version=1,
-        domain=DOMAIN,
-        title="Buenos Aires",
-        data={
-            CONF_LATITUDE: -34.6217,
-            CONF_LONGITUDE: -58.4258,
-            CONF_NAME: "Buenos Aires",
-        },
-        source=config_entries.SOURCE_USER,
-        options={},
-        unique_id="buenos_aires",
-    )
-    existing_entry.add_to_hass(hass)
-
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-    assert result["type"] == FlowResultType.FORM
-
-    with patch(
-        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
-    ) as mock_coordinator:
-        mock_coordinator_instance = mock_coordinator.return_value
-        mock_coordinator_instance._smn_data._token_manager = mock_token_manager
-        mock_coordinator_instance._smn_data.fetch_location_by_coords = AsyncMock(
-            return_value=mock_location_data
-        )
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_LATITUDE: -34.6217,
-                CONF_LONGITUDE: -58.4258,
-                CONF_NAME: "Another Name",
-            },
-        )
-
-        await hass.async_block_till_done()
-
-        assert result2["type"] == FlowResultType.ABORT
-        assert result2["reason"] == "already_configured"
-
-
-@pytest.mark.asyncio
-async def test_form_api_error(hass: HomeAssistant, mock_token_manager) -> None:
-    """Test we handle API errors."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-    assert result["type"] == FlowResultType.FORM
-
-    with patch(
-        "custom_components.smn_ar.config_flow.ArgentinaSMNDataUpdateCoordinator"
-    ) as mock_coordinator:
-        mock_coordinator_instance = mock_coordinator.return_value
-        mock_coordinator_instance._smn_data._token_manager = mock_token_manager
-        mock_coordinator_instance._smn_data.fetch_location_by_coords = AsyncMock(
-            side_effect=Exception("API Error")
-        )
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                CONF_LATITUDE: -31.4201,
-                CONF_LONGITUDE: -64.1888,
-                CONF_NAME: "Test Location",
-            },
-        )
-
-        await hass.async_block_till_done()
-
-        assert result2["type"] == FlowResultType.FORM
-        assert result2["errors"] == {"base": "cannot_connect"}
+    assert result["errors"] == {"base": "already_configured"}

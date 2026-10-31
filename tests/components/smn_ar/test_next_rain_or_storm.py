@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from custom_components.smn_ar.sensor import find_next_rain_or_storm
+from custom_components.smn_ar.sensor import find_next_rain_or_storm, next_rain_message, rain_curve
 
 ARG = timezone(timedelta(hours=-3))
 NOW = datetime(2026, 10, 7, 8, 0, tzinfo=ARG)  # morning period
@@ -45,7 +45,7 @@ def test_forecast_rain() -> None:
     assert next_any["tipo"] == "lluvia"
     assert next_any["source"][1] == "pronóstico"
     assert next_any["when"] == datetime(2026, 10, 7, 12, 0, tzinfo=ARG)
-    assert next_any["probability"] == 70
+    assert next_any["smn_probability"] == 70
     assert next_storm is None
 
 
@@ -62,7 +62,7 @@ def test_zone_alert_wins_same_period_and_keeps_probability() -> None:
     assert next_any["source"][1] == "alerta de zona"
     assert next_any["tipo"] == "tormenta"
     assert next_any["level_name"] == "naranja"
-    assert next_any["probability"] == 70
+    assert next_any["smn_probability"] == 70
 
 
 def test_zone_alert_in_current_period() -> None:
@@ -127,6 +127,8 @@ async def test_entity_attributes(hass, enable_custom_integrations, freezer) -> N
     assert state.attributes["en_curso"] is False
     assert state.attributes["probabilidad"] is None  # no Open-Meteo to measure it by
     assert "no una certeza" in state.attributes["criterio"]
+    assert state.attributes["titulo"] == "Lluvia posible desde las 12:00"
+    assert state.attributes["curva"] == []
     assert state.attributes["proxima_tormenta"] == "2026-10-07T18:00:00-03:00"
     assert "30 km" in state.attributes["criterio"]
 
@@ -158,8 +160,8 @@ def test_hourly_forecast_refines_the_smn_period() -> None:
     next_any, _ = _find_with([_period("12:00", 73, [40, 70])], open_meteo_hourly=open_meteo_hourly)
     assert next_any["source"][1] == "pronóstico"
     assert next_any["when"] == datetime(2026, 10, 7, 15, 0, tzinfo=ARG)
-    assert next_any["probability"] == 70  # still the SMN period's
-    assert next_any["odds"] == 42  # how often it rained after a 30% hour like that
+    assert next_any["smn_probability"] == 70  # still the SMN period's
+    assert next_any["odds"] == 11  # one 30% hour among dry ones, from 13:00 to 16:00
 
 
 def test_smn_period_and_alert_need_open_meteo_rain() -> None:
@@ -177,7 +179,8 @@ def test_hourly_forecast_alone() -> None:
     next_any, next_storm = _find_with(open_meteo_hourly=open_meteo_hourly)
     assert next_any["source"][1] == "pronóstico horario"
     assert next_any["when"] == datetime(2026, 10, 7, 10, 0, tzinfo=ARG)
-    assert next_any["odds"] == 47  # Open-Meteo's 60% rains less often than that
+    assert [pct for _, pct in next_any["curve"]] == [10, 27, 34]  # Open-Meteo's hours start at 9:00
+    assert next_any["odds"] == 34
     assert next_storm["when"] == datetime(2026, 10, 7, 11, 0, tzinfo=ARG)
 
 
@@ -250,3 +253,86 @@ def test_stale_or_finished_nowcast_is_ignored() -> None:
     assert _find_with(nowcast=nowcast(30))[0]["odds"] == 80  # cold tops over the location
     assert _find_with(nowcast=nowcast(180)) == (None, None)  # the source kept failing
     assert _find_with(nowcast=nowcast(30, until=-5)) == (None, None)  # already went past
+
+
+NOW_CORDOBA = datetime(2026, 10, 7, 12, 38, tzinfo=ARG)
+HOURS_CORDOBA = [(12, 0, 0.0), (13, 26, 0.1), (14, 62, 0.6), (15, 86, 0.5), (16, 88, 0.3), (17, 79, 0.2)]
+AFTERNOON_ALERT = {"early_morning": None, "morning": 1, "afternoon": 3, "night": 1}
+
+
+def _find_cordoba():
+    return find_next_rain_or_storm(
+        [_period("12:00", 73, [40, 70])], _alerts(41, AFTERNOON_ALERT), None, LAT, LON, 30, NOW_CORDOBA,
+        open_meteo_hourly=[_hour(h, p, mm) for h, p, mm in HOURS_CORDOBA],
+    )
+
+
+def test_curve_gives_the_odds_their_window() -> None:
+    next_any, _ = _find_cordoba()
+    assert next_any["source"][1] == "alerta de zona"
+    assert next_any["when"] == datetime(2026, 10, 7, 14, 0, tzinfo=ARG)
+    assert [pct for _, pct in next_any["curve"]] == [1, 11, 25, 39, 51, 57]
+    assert next_any["odds"] == 57
+    assert next_any["odds_until"] == datetime(2026, 10, 7, 18, 0, tzinfo=ARG)
+    assert next_any["hour_odds"] == 29
+    assert next_any["hourly_probability"] == 62
+    assert next_any["smn_probability"] == 70
+
+
+def test_curve_is_never_lower_for_a_longer_window() -> None:
+    # A dry hour after a wet one: 1 h gives more than the uncorrected 2 h would.
+    curve = rain_curve([_hour(10, 90), _hour(11, 0, 0.0)], datetime(2026, 10, 7, 10, 0, tzinfo=ARG))
+    assert len(curve) == 2
+    assert curve[1][1] >= curve[0][1]
+
+
+def test_curve_starts_shortly_before_a_later_rain() -> None:
+    hours = [_hour(h, 0, 0.0) for h in range(8, 20)] + [_hour(20, 90)]
+    next_any, _ = _find_with(open_meteo_hourly=hours)
+    assert next_any["curve"][0][0] == datetime(2026, 10, 7, 19, 0, tzinfo=ARG)  # from 18:00
+
+
+def test_message_for_a_forecast() -> None:
+    next_any, next_storm = _find_cordoba()
+    assert next_rain_message(next_any, next_storm, NOW_CORDOBA) == {
+        "titulo": "Tormenta posible desde las 14:00",
+        "detalle": "25% antes de las 15:00 · 57% antes de las 18:00 · alerta amarilla",
+        "icono": "mdi:weather-cloudy-clock",
+        "color": "orange",
+    }
+
+
+def test_message_with_nothing_ahead() -> None:
+    assert next_rain_message(None, None, NOW)["titulo"] == "Sin lluvia a la vista"
+
+
+def test_message_never_says_a_forecast_is_under_way() -> None:
+    next_any, _ = _find_with(open_meteo_hourly=[_hour(8, 60, 1.0)])
+    assert next_any["when"] <= NOW
+    message = next_rain_message(next_any, None, NOW)
+    assert message["titulo"] == "Lluvia posible ahora"
+    assert message["icono"] == "mdi:weather-cloudy-clock"
+
+
+def test_message_for_an_aviso_inside() -> None:
+    next_any = {
+        "when": NOW - timedelta(minutes=10), "tipo": "tormenta", "source": (4, "aviso cercano"), "distance_km": 0,
+    }
+    message = next_rain_message(next_any, next_any, NOW)
+    assert message["titulo"] == "Aviso de tormenta vigente"
+    assert message["detalle"] == "según aviso cercano"
+    assert message["color"] == "red"
+
+
+def test_message_for_an_approaching_echo_and_a_later_storm() -> None:
+    storm = {"when": NOW + timedelta(days=1), "tipo": "tormenta", "source": (3, "alerta de zona")}
+    next_any = {
+        "when": NOW + timedelta(minutes=40), "tipo": "lluvia", "source": (5, "radar SINARAME Córdoba"),
+        "distance_km": 12.3, "direction": "W", "odds": 42, "odds_until": NOW + timedelta(hours=2),
+    }
+    message = next_rain_message(next_any, storm, NOW)
+    assert message["titulo"] == "Lluvia cerca de las 08:40"
+    assert message["detalle"] == (
+        "42% antes de las 10:00 · a 12 km al oeste · según radar SINARAME Córdoba"
+        " · tormenta posible desde mañana a las 08:00"
+    )
