@@ -79,6 +79,14 @@ def _estimate_feels_like(
     return round(apparent, 1)
 
 
+def _aviso_expired(alert: dict[str, Any], now: datetime) -> bool:
+    """Whether an aviso's end_date has passed; False if it can't be told."""
+    try:
+        return datetime.fromisoformat(alert["end_date"]) <= now
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 class ArgentinaSMNData:
     """Fetches and holds SMN data, via the local smn-proxy add-on.
 
@@ -352,12 +360,32 @@ class ArgentinaSMNData:
         """Fetch avisos a muy corto plazo (short-term severe weather warnings)."""
         try:
             data = await self._get_json(f"{API_SHORTTERM_ALERT_PATH}/{location_id}")
-        except aiohttp.ClientError as err:
-            _LOGGER.debug("Error fetching short-term alerts (may be normal if none): %s", err)
-            self.shortterm_alerts = []
+        except aiohttp.ClientResponseError as err:
+            if err.status == 404:
+                self.shortterm_alerts = []
+            else:
+                self._keep_unexpired_shortterm_alerts(err)
+            return
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            self._keep_unexpired_shortterm_alerts(err)
             return
 
-        self.shortterm_alerts = data if isinstance(data, list) else []
+        if isinstance(data, list):
+            self.shortterm_alerts = data
+        else:
+            self._keep_unexpired_shortterm_alerts(f"unexpected response: {data!r}")
+
+    def _keep_unexpired_shortterm_alerts(self, reason: object) -> None:
+        """Keep the known avisos through a failed poll, except expired ones.
+
+        A failure says nothing about the avisos. Emptying the list would read
+        as "lifted", and the next good poll would announce them as new.
+        """
+        _LOGGER.debug("Keeping known short-term alerts after failed poll: %s", reason)
+        now = datetime.now(timezone.utc)
+        self.shortterm_alerts = [
+            alert for alert in self.shortterm_alerts if not _aviso_expired(alert, now)
+        ]
 
     @staticmethod
     def _shortterm_alert_signature(alert: dict[str, Any]) -> tuple[Any, ...]:
