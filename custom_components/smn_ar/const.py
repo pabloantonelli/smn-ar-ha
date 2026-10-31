@@ -379,15 +379,15 @@ NEXT_RAIN_HOURLY_STORM_PROBABILITY: Final = 30  # %
 # of these as clouds instead (a trace the model gives little chance to).
 HOURLY_TRACE_PROBABILITY: Final = 40  # %
 HOURLY_TRACE_PRECIPITATION: Final = 0.2  # mm
-# How often it actually rained when each source said so (the sensor's
-# `probabilidad`), from the same METARs (recent-rain codes included):
-# forecasts' probabilities run high. (Open-Meteo's probability for the
-# hour, % it rained within an hour of it), first match from the top.
-NEXT_RAIN_HOURLY_ODDS: Final = ((90, 81), (80, 60), (70, 55), (60, 47), (50, 43), (40, 38), (30, 30), (0, 22))
-# An SMN period or zone alert confirmed by Open-Meteo: (the confirming
-# hour's probability, % it rained in the rest of the period). Measured
-# without the SMN, so if anything it rains a bit more often than this.
-NEXT_RAIN_PERIOD_ODDS: Final = ((90, 86), (70, 68), (50, 56), (0, 42))
+# Chance of rain within 1, 2... 6 hours, the forecast sources' `probabilidad`.
+# q = 1 - product(1 - HOURLY_RAIN_ODDS of each hour) would be right if hours
+# were independent, but rainy hours come together (a q of 64% over 3 h rained
+# 47% of the time), so each window corrects it: logit(P) = a + b * logit(q).
+# (a, b) fitted on a year of Open-Meteo vs METARs at 15 airports (Oct 2025-Oct
+# 2026), Brier skill 31-43% with each airport held out.
+NEXT_RAIN_CURVE_CALIBRATION: Final = (
+    (0.103, 0.942), (-0.433, 0.889), (-0.713, 0.848), (-0.888, 0.818), (-1.007, 0.795), (-1.095, 0.776),
+)
 # Cold cloud tops over the location (see nowcast.IR_RAIN_COLDNESS).
 NEXT_RAIN_SATELLITE_ODDS: Final = 80
 # The radar: (echo dBZ, % it rained within 2 h), from 11 days of SINARAME

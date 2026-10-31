@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import logging
+import math
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -43,11 +44,11 @@ from .const import (
     ALERT_EVENT_NEARBY_KEYWORDS,
     ALERT_LEVEL_MAP,
     DOMAIN,
+    HOURLY_RAIN_ODDS,
     NEXT_RAIN_HOURLY_MIN_PRECIPITATION,
-    NEXT_RAIN_HOURLY_ODDS,
     NEXT_RAIN_HOURLY_PROBABILITY,
     NEXT_RAIN_HOURLY_STORM_PROBABILITY,
-    NEXT_RAIN_PERIOD_ODDS,
+    NEXT_RAIN_CURVE_CALIBRATION,
     NEXT_RAIN_PROBABILITY_THRESHOLD,
     NEXT_RAIN_RADAR_ODDS,
     NEXT_RAIN_REFINE_MIN_PRECIPITATION,
@@ -94,6 +95,19 @@ _SOURCE_HOURLY = (2, "pronóstico horario")
 _SOURCE_FORECAST = (1, "pronóstico")
 _NOWCAST_STRENGTH = 5  # the nowcast's own source name (radar / satélite) goes with it
 _PERIOD = timedelta(hours=6)
+_RADAR_ODDS_WINDOW = timedelta(hours=2)
+# The curve starts up to this long before the first rainy hour.
+_CURVE_LEAD = timedelta(hours=2)
+_HOUR = timedelta(hours=1)
+_LOGIT_CLIP = 0.002
+_DIRECTIONS_ES = {
+    "N": "norte", "NNE": "nornoreste", "NE": "noreste", "ENE": "estenoreste",
+    "E": "este", "ESE": "estesureste", "SE": "sureste", "SSE": "sursureste",
+    "S": "sur", "SSW": "sursuroeste", "SW": "suroeste", "WSW": "oestesuroeste",
+    "W": "oeste", "WNW": "oestenoroeste", "NW": "noroeste", "NNW": "nornoroeste",
+}
+_WEEKDAYS_ES = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+_LEVEL_NAMES_ES = {"amarillo": "amarilla", "naranja": "naranja", "rojo": "roja"}
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -120,10 +134,37 @@ def _hourly_is_rain(hour: dict[str, Any]) -> str | None:
 
 
 def _odds(table: tuple[tuple[int, int], ...], probability: float | None) -> int | None:
-    """The measured % for a forecast probability (see NEXT_RAIN_HOURLY_ODDS)."""
+    """The measured % for a value, from a table of (minimum, odds)."""
     if probability is None:
         return None
     return next(odds for minimum, odds in table if probability >= minimum)
+
+
+def _logit(value: float) -> float:
+    value = min(max(value, _LOGIT_CLIP), 1 - _LOGIT_CLIP)
+    return math.log(value / (1 - value))
+
+
+def rain_curve(open_meteo_hourly: list[dict[str, Any]], start: datetime) -> list[tuple[datetime, int]]:
+    """(end of the window, % chance of rain from `start` to it), one per hour up to 6 h.
+
+    See NEXT_RAIN_CURVE_CALIBRATION. Starts at the first hour Open-Meteo has
+    from `start` on and stops where its hours run out. The windows are
+    nested, so a longer one is never less likely.
+    """
+    probabilities = {hour["when"]: hour.get("probability") for hour in open_meteo_hourly}
+    start = min((when for when in probabilities if when >= start), default=start)
+    curve: list[tuple[datetime, int]] = []
+    dry = 1.0
+    highest = 0
+    for index, (a, b) in enumerate(NEXT_RAIN_CURVE_CALIBRATION):
+        probability = probabilities.get(start + index * _HOUR)
+        if probability is None:
+            break
+        dry *= 1 - _odds(HOURLY_RAIN_ODDS, probability) / 100
+        highest = max(highest, round(100 / (1 + math.exp(-(a + b * _logit(1 - dry))))))
+        curve.append((start + (index + 1) * _HOUR, highest))
+    return curve
 
 
 def _nowcast_odds(nowcast: Nowcast) -> int | None:
@@ -168,9 +209,11 @@ def find_next_rain_or_storm(
     The earliest wins; anything already
     under way counts as "now", and ties go to the stronger source.
 
-    `odds` is how often it rained when a source said so like this (see
-    NEXT_RAIN_HOURLY_ODDS), None where that couldn't be measured: the
-    avisos, the infrared's projected arrivals.
+    `odds` is the chance of rain before `odds_until`, None where it couldn't
+    be measured: the avisos, the infrared's projected arrivals. For the
+    forecast sources it's the end of `curve` (see rain_curve), which starts
+    at most _CURVE_LEAD before `when`, and `hour_odds` is for the very hour
+    of `when` (HOURLY_RAIN_ODDS).
     """
     now = now or datetime.now(_ARG_TZ)
     open_meteo_hourly = open_meteo_hourly or []
@@ -180,13 +223,13 @@ def find_next_rain_or_storm(
     candidates: list[dict[str, Any]] = []
 
     def refine(start: datetime) -> dict[str, Any] | None:
-        """`when` and `odds` from the first not-yet-past hour of a 6-hour period Open-Meteo gives some rain in.
+        """`when` from the first not-yet-past hour of a 6-hour period Open-Meteo gives some rain in.
 
         None when it gives none (see NEXT_RAIN_REFINE_PROBABILITY); the
         period's start when there's no Open-Meteo to tell.
         """
         if not open_meteo_hourly:
-            return {"when": start, "odds": None}
+            return {"when": start}
         for hour in open_meteo_hourly:
             if (
                 start <= hour["when"] < start + _PERIOD
@@ -194,10 +237,15 @@ def find_next_rain_or_storm(
                 and (hour.get("probability") or 0) >= NEXT_RAIN_REFINE_PROBABILITY
                 and (hour.get("precipitation") or 0) >= NEXT_RAIN_REFINE_MIN_PRECIPITATION
             ):
-                return {"when": hour["when"], "odds": _odds(NEXT_RAIN_PERIOD_ODDS, hour.get("probability"))}
+                return {
+                    "when": hour["when"],
+                    "hour_odds": _odds(HOURLY_RAIN_ODDS, hour.get("probability")),
+                    "hourly_probability": hour.get("probability"),
+                }
         return None
 
     if nowcast is not None and nowcast.arrival is not None:
+        odds = _nowcast_odds(nowcast)
         candidates.append(
             {
                 "when": nowcast.arrival,
@@ -207,7 +255,9 @@ def find_next_rain_or_storm(
                 "distance_km": nowcast.distance_km,
                 "direction": wind_cardinal(nowcast.from_deg),
                 "intensity": nowcast.intensity,
-                "odds": _nowcast_odds(nowcast),
+                "odds": odds,
+                # The radar's odds are for rain within 2 h; the infrared's window wasn't measured.
+                "odds_until": now + _RADAR_ODDS_WINDOW if odds is not None and nowcast.source.startswith(SOURCE_RADAR) else None,
             }
         )
 
@@ -254,7 +304,7 @@ def find_next_rain_or_storm(
                 "tipo": _hourly_is_rain(hour),
                 "source": _SOURCE_HOURLY,
                 "hourly_probability": hour.get("probability"),
-                "odds": _odds(NEXT_RAIN_HOURLY_ODDS, hour.get("probability")),
+                "hour_odds": _odds(HOURLY_RAIN_ODDS, hour.get("probability")),
             }
         )
 
@@ -267,7 +317,7 @@ def find_next_rain_or_storm(
         probability = max(rain_prob_range) if rain_prob_range else None
         likelihood = sum(rain_prob_range) / len(rain_prob_range) if rain_prob_range else None
         condition = format_condition(period.get("weather"))
-        forecast_by_period[when] = {"probability": probability, "condition": condition}
+        forecast_by_period[when] = {"smn_probability": probability, "condition": condition}
         if when + _PERIOD <= now:
             continue
         storm = condition == ATTR_CONDITION_LIGHTNING_RAINY
@@ -285,7 +335,14 @@ def find_next_rain_or_storm(
         )
 
     candidates.sort(key=sort_key)
+    current_hour = now.astimezone(_ARG_TZ).replace(minute=0, second=0, microsecond=0)
     for candidate in candidates:
+        if candidate["source"][0] < _SOURCE_AVISO[0]:
+            when_hour = candidate["when"].astimezone(_ARG_TZ).replace(minute=0, second=0, microsecond=0)
+            curve = rain_curve(open_meteo_hourly, max(current_hour, when_hour - _CURVE_LEAD))
+            candidate["curve"] = curve
+            if curve:
+                candidate["odds_until"], candidate["odds"] = curve[-1]
         # Rain probability/condition SMN's forecast gives for the same period.
         candidate.update(forecast_by_period.get(_period_start(candidate["when"]), {}))
         if motion is not None:
@@ -293,6 +350,79 @@ def find_next_rain_or_storm(
     next_any = candidates[0] if candidates else None
     next_storm = next((c for c in candidates if c["tipo"] == "tormenta"), None)
     return next_any, next_storm
+
+
+def _day_and_time(when: datetime, now: datetime) -> str:
+    """"las 14:00", "mañana a las 14:00" or "el lunes a las 14:00"."""
+    local = when.astimezone(_ARG_TZ)
+    days = (local.date() - now.astimezone(_ARG_TZ).date()).days
+    clock = f"las {local:%H:%M}"
+    if days <= 0:
+        return clock
+    return f"mañana a {clock}" if days == 1 else f"el {_WEEKDAYS_ES[local.weekday()]} a {clock}"
+
+
+def next_rain_message(
+    next_any: dict[str, Any] | None, next_storm: dict[str, Any] | None, now: datetime
+) -> dict[str, str]:
+    """`titulo`, `detalle`, `icono` and `color` ready to show, so a card only displays them.
+
+    Uses clock times, not "in 40 min": the text only changes with a
+    coordinator update, and a countdown would go stale in between.
+    """
+    if next_any is None:
+        return {
+            "titulo": "Sin lluvia a la vista",
+            "detalle": "Nada en el radar ni en los pronósticos",
+            "icono": "mdi:weather-partly-cloudy",
+            "color": "green",
+        }
+    tipo = next_any["tipo"]
+    strength = next_any["source"][0]
+    observed = strength >= _SOURCE_AVISO[0]
+    under_way = next_any["when"] <= now
+    odds = next_any.get("odds")
+
+    if under_way and strength == _SOURCE_AVISO[0]:
+        titulo = f"Aviso de {tipo} vigente"
+    elif under_way and observed:
+        titulo = f"{tipo.capitalize()} en curso"
+    elif under_way:
+        titulo = f"{tipo.capitalize()} posible ahora"
+    elif observed:
+        titulo = f"{tipo.capitalize()} cerca de {_day_and_time(next_any['when'], now)}"
+    else:
+        titulo = f"{tipo.capitalize()} posible desde {_day_and_time(next_any['when'], now)}"
+
+    parts = []
+    if next_any.get("curve"):
+        first_hour_end = next_any["when"] + _HOUR
+        first = next(((end, pct) for end, pct in next_any["curve"] if end >= first_hour_end), None)
+        if first and first[1] != odds:
+            parts.append(f"{first[1]}% antes de las {first[0].astimezone(_ARG_TZ):%H:%M}")
+    if odds is not None:
+        until = next_any.get("odds_until")
+        parts.append(f"{odds}% antes de las {until.astimezone(_ARG_TZ):%H:%M}" if until else f"{odds}%")
+    if next_any.get("level_name"):
+        name = next_any["level_name"]
+        parts.append(f"alerta {_LEVEL_NAMES_ES.get(name, name)}")
+    if next_any.get("distance_km"):
+        place = f"a {next_any['distance_km']:.0f} km"
+        if next_any.get("direction") in _DIRECTIONS_ES:
+            place += f" al {_DIRECTIONS_ES[next_any['direction']]}"
+        parts.append(place)
+    if not next_any.get("level_name"):
+        parts.append(f"según {next_any['source'][1]}")
+    if next_storm is not None and next_storm is not next_any:
+        parts.append(f"tormenta posible desde {_day_and_time(next_storm['when'], now)}")
+
+    if under_way and observed:
+        icono = "mdi:weather-lightning-rainy" if tipo == "tormenta" else "mdi:weather-pouring"
+        color = "red" if tipo == "tormenta" else "blue"
+    else:
+        icono = "mdi:weather-cloudy-clock"
+        color = "orange" if observed or (odds or 0) >= 50 else "blue-grey"
+    return {"titulo": titulo, "detalle": " · ".join(parts), "icono": icono, "color": color}
 
 
 def _format_time(iso_str: str | None) -> str | None:
@@ -705,6 +835,7 @@ class SMNNextRainSensor(_SMNSensorBase):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         next_any, next_storm = self._find()
+        now = datetime.now(_ARG_TZ)
         attrs: dict[str, Any] = {
             "criterio": (
                 "Lo más próximo entre: la lluvia o tormenta que el radar (SINARAME o "
@@ -714,14 +845,15 @@ class SMNNextRainSensor(_SMNSensorBase):
                 f"o el pronóstico del SMN (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% o más de "
                 "probabilidad, o tormenta) cuando Open-Meteo también da lluvia en esa franja. "
                 "Es una estimación, no una certeza: `probabilidad` dice cuántas veces llovió de verdad "
-                "cuando esa fuente avisó así (medido contra observaciones de aeropuertos)"
+                "antes de `probabilidad_hasta` en situaciones así (medido contra observaciones de "
+                "aeropuertos), y `probabilidad_hora` lo mismo sólo para la hora de inicio"
             ),
             "rain_expected": next_any is not None,
             "proxima_tormenta": next_storm["when"].isoformat() if next_storm else None,
+            **next_rain_message(next_any, next_storm, now),
         }
         if next_any is None:
             return attrs
-        now = datetime.now(_ARG_TZ)
         attrs.update(
             {
                 "tipo": next_any["tipo"],
@@ -731,7 +863,12 @@ class SMNNextRainSensor(_SMNSensorBase):
                 "en_curso": next_any["when"] <= now,
                 "minutos": max(0, round((next_any["when"] - now).total_seconds() / 60)),
                 "probabilidad": next_any.get("odds"),
-                "probability": next_any.get("probability"),
+                "probabilidad_hasta": next_any["odds_until"].isoformat() if next_any.get("odds_until") else None,
+                "probabilidad_hora": next_any.get("hour_odds"),
+                "probabilidad_smn": next_any.get("smn_probability"),
+                "curva": [
+                    {"hasta": end.isoformat(), "probabilidad": pct} for end, pct in next_any.get("curve") or []
+                ],
                 "condition": next_any.get("condition"),
             }
         )

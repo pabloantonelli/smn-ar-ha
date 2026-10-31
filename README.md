@@ -164,16 +164,26 @@ quedan por debajo de lo que el radar toma como lluvia.
 
 Atributos principales:
 
-- **`probabilidad`**: es una estimación, no una certeza. Este número dice
-  cuántas veces llovió de verdad cuando esa fuente avisó así, medido contra
-  un año de observaciones de 15 aeropuertos. Los pronósticos exageran: cuando
-  Open-Meteo dice 60% para una hora, llueve dentro de esa hora ±1 el 47% de
-  las veces. Satélite con topes fríos encima: ~80%. Franja del SMN o alerta
-  confirmada por Open-Meteo: 42–86%, según la hora que la confirma. Radar:
-  42–58% según la intensidad del eco (medido sólo con el radar de Córdoba,
-  así que es aproximado). Queda vacío donde no se pudo medir (avisos, una
-  llegada proyectada por el satélite).
-  `probability` es en cambio el máximo del rango que da el SMN para la franja.
+- **`titulo`** / **`detalle`** / **`icono`** / **`color`**: el mensaje ya
+  armado para mostrar, por ejemplo "Tormenta posible desde las 14:00" y
+  "25% antes de las 15:00 · 57% antes de las 18:00 · alerta amarilla".
+- **`probabilidad`**: es una estimación, no una certeza: la chance de que
+  llueva antes de `probabilidad_hasta`. Para los pronósticos sale de `curva`.
+  Radar: 42–58% en 2 horas, según la intensidad del eco (medido sólo con el
+  radar de Córdoba, así que es aproximado). Satélite con topes fríos encima:
+  ~80%. Queda vacío donde no se pudo medir (avisos, una llegada proyectada por
+  el satélite, o sin datos de Open-Meteo).
+- **`probabilidad_hasta`**: hasta cuándo vale `probabilidad`. No se refiere a
+  la hora de inicio.
+- **`probabilidad_hora`**: la chance sólo para la hora de inicio. Vacío si la
+  fuente no es un pronóstico.
+- **`curva`**: la probabilidad acumulada hora por hora, hasta 6 horas, desde
+  como mucho 2 horas antes del inicio. Combina las horas de Open-Meteo y corrige
+  que las horas de lluvia vienen juntas, calibrada contra un año de
+  observaciones de 15 aeropuertos. Es la misma con o sin alerta: las alertas y
+  las franjas del SMN deciden si hay aviso, no cuánto da el número.
+- **`probabilidad_smn`**: el máximo del rango que da el SMN para la franja,
+  tal cual, sin calibrar: no es la chance de que llueva.
 - **`tipo`**: `lluvia` o `tormenta`.
 - **`fuente`**: `radar SINARAME <radar>`, `radar`, `satélite infrarrojo`,
   `aviso cercano`, `alerta de zona`, `pronóstico horario` o `pronóstico`.
@@ -185,6 +195,18 @@ Atributos principales:
 - **`velocidad_kmh`** / **`se_mueve_hacia`** / **`movimiento_segun`**: cómo se
   mueven las tormentas y de dónde salió ese dato.
 - **`proxima_tormenta`**: la próxima tormenta, aunque antes venga lluvia.
+
+Una tarjeta sólo tiene que mostrar el mensaje:
+
+```yaml
+type: custom:mushroom-template-card
+entity: sensor.casa_proxima_lluvia
+multiline_secondary: true
+icon: "{{ state_attr(entity, 'icono') }}"
+color: "{{ state_attr(entity, 'color') }}"
+primary: "{{ state_attr(entity, 'titulo') }}"
+secondary: "{{ state_attr(entity, 'detalle') }}"
+```
 
 ### Qué tan bien le pega en tu casa
 
