@@ -17,12 +17,6 @@ _ARG_TZ = timezone(timedelta(hours=-3))
 _HOUR = timedelta(hours=1)
 _PERIODS = ((0, "madrugada"), (6, "mañana"), (12, "tarde"), (18, "noche"))
 _WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
-_DIRECTIONS = {
-    "N": "norte", "NNE": "nornoreste", "NE": "noreste", "ENE": "estenoreste",
-    "E": "este", "ESE": "estesureste", "SE": "sureste", "SSE": "sursureste",
-    "S": "sur", "SSW": "sursuroeste", "SW": "suroeste", "WSW": "oestesuroeste",
-    "W": "oeste", "WNW": "oestenoroeste", "NW": "noroeste", "NNW": "nornoroeste",
-}
 # An hour where the rain starts: the same as confirming an SMN period
 # (const.NEXT_RAIN_REFINE_*).
 _ONSET_PROBABILITY = 30
@@ -30,8 +24,6 @@ _ONSET_PRECIPITATION = 0.1
 # Wind worth mentioning, km/h.
 _WINDY_SPEED = 30
 _WINDY_GUST = 45
-# Feels-like worth mentioning: this many °C away from the temperature.
-_FEELS_LIKE_GAP = 3
 
 
 @dataclass
@@ -137,157 +129,132 @@ def describe_period(
     )
 
 
-def _sky(period: Period) -> str | None:
-    if period.cloud is None:
+def _sky(periods: list[Period]) -> str | None:
+    clouds = [p.cloud for p in periods if p.cloud is not None]
+    if not clouds:
         return None
-    if period.cloud < 20:
-        return "despejada"
-    if period.cloud < 45:
-        return "con pocas nubes"
-    if period.cloud < 75:
-        return "parcialmente nublada"
-    return "nublada"
+    cloud = sum(clouds) / len(clouds)
+    if cloud < 20:
+        return "despejado"
+    if cloud < 45:
+        return "con algunas nubes"
+    if cloud < 75:
+        return "parcialmente nublado"
+    return "nublado"
 
 
-def _temperature(period: Period) -> str:
-    low, high = _round(period.temp_min), _round(period.temp_max)
-    if period.name == "tarde":
-        text = f"con máxima de {high} °C a las {_clock(period.max_hour)}"
-    elif period.name == "mañana":
-        text = f"con {low} °C" if low == high else f"entre {low} y {high} °C"
-    else:
-        text = f"con mínima de {low} °C"
-    feels = period.feels_at_max
-    if feels is not None and period.name in ("mañana", "tarde") and abs(feels - period.temp_max) >= _FEELS_LIKE_GAP:
-        text += f" (sensación de {_round(feels)} °C)"
-    return text
+def _when(period: Period, onset: bool = True) -> str:
+    """"desde las 15", or "a la tarde"."""
+    if onset and period.onset is not None and period.onset > period.start:
+        return f"desde las {_clock(period.onset)}"
+    return f"a la {period.name}"
 
 
-def _rain(period: Period) -> str | None:
-    rain = period.rain
-    if rain is None or rain < 15:
+def _rain_words(chance: int | None) -> str | None:
+    """The chance of rain in words; None when it's too low to mention."""
+    if chance is None or chance < 15:
         return None
-    since = f" desde las {_clock(period.onset)}" if period.onset and period.onset > period.start else ""
-    if rain >= 85:
-        return f"lluvia casi segura{since} ({rain} %)"
-    if rain >= 60:
-        return f"probable lluvia{since} ({rain} %)"
-    if rain >= 35:
-        return f"puede llover{since} ({rain} %)"
-    return f"baja chance de lluvia ({rain} %)"
+    if chance < 35:
+        return "no se descarta alguna lluvia"
+    if chance < 60:
+        return "puede llover"
+    if chance < 85:
+        return "probablemente llueva"
+    return "lluvia casi segura"
 
 
-def _storm(period: Period, smn_note: bool = True) -> str | None:
-    storm = period.storm
-    if storm is None:
-        return None
-    window = ""
-    if period.storm_from is not None:
-        window = f" entre las {_clock(period.storm_from)} y las {_clock(period.storm_from + 3 * _HOUR)}"
-    if storm >= 50:
-        return f"tormentas probables ({storm} %{window})"
-    if storm >= 25:
-        return f"posibles tormentas ({storm} %{window})"
-    if period.smn_storm and smn_note:
-        return f"el SMN anuncia tormentas, aunque por ahora se ven poco probables ({storm} %)"
+def _storm_words(periods: list[Period]) -> tuple[str, Period] | None:
+    """One answer for storms: the integration's chance, hedged when SMN sees one it doesn't."""
+    stormiest = max((p for p in periods if p.storm is not None), key=lambda p: p.storm, default=None)
+    if stormiest is not None and stormiest.storm >= 50:
+        return "con tormentas", stormiest
+    if stormiest is not None and stormiest.storm >= 25:
+        return "con posibles tormentas", stormiest
+    smn = next((p for p in periods if p.smn_storm), None)
+    if smn is not None:
+        return "no se descartan tormentas", smn
     return None
 
 
-def _wind(period: Period) -> str | None:
-    if period.wind is None:
-        return None
-    windy = period.wind >= _WINDY_SPEED or (period.gust or 0) >= _WINDY_GUST
+def _weather(periods: list[Period], chance: int | None = None) -> tuple[str | None, str | None]:
+    """(sentence about rain and storms, short words for the headline) over some periods."""
+    wettest = max((p for p in periods if p.rain is not None), key=lambda p: p.rain, default=None)
+    if chance is None and wettest is not None:
+        chance = wettest.rain
+    rain = _rain_words(chance)
+    storm = _storm_words(periods)
+    several = len(periods) > 1
+    parts = []
+    if rain:
+        # When: the hour it starts, or the period (only if there are several to tell apart).
+        timing = ""
+        if wettest is not None and (several or (chance >= 35 and wettest.onset and wettest.onset > wettest.start)):
+            timing = f" {_when(wettest, onset=chance >= 35)}"
+        if rain == "lluvia casi segura" and timing:
+            timing = timing.replace(" a la", ", sobre todo a la").replace(" desde", ", desde")
+        parts.append(rain + timing)
+    if storm:
+        words, period = storm
+        when = f" a la {period.name}" if several and not (wettest is period and rain) else ""
+        if words == "no se descartan tormentas":
+            parts.append(words + when)
+        else:
+            parts.append((words if rain else words.removeprefix("con ")) + when)
+    if not parts:
+        return None, None
+    if len(parts) == 1:
+        text = parts[0]
+    elif rain == "no se descarta alguna lluvia" and storm[0] == "no se descartan tormentas":
+        text = "no se descartan lluvias ni tormentas" + parts[1].removeprefix("no se descartan tormentas")
+    elif parts[1].startswith("no se"):
+        text = f"{parts[0]} y {parts[1]}"
+    else:
+        text = f"{parts[0]}, {parts[1]}"
+    return text[0].upper() + text[1:] + ".", _headline_words(rain, storm[0] if storm else None)
+
+
+_RAIN_SHORT = {
+    "no se descarta alguna lluvia": "alguna lluvia",
+    "puede llover": "puede llover",
+    "probablemente llueva": "probable lluvia",
+    "lluvia casi segura": "lluvia",
+}
+
+
+def _headline_words(rain: str | None, storm: str | None) -> str:
+    """Short words for the state: "lluvia, posibles tormentas"."""
+    words = [w for w in (_RAIN_SHORT.get(rain or ""), (storm or "").removeprefix("con ")) if w]
+    return ", ".join(words)
+
+
+def _wind_words(periods: list[Period]) -> str | None:
+    """Strong wind, when there is: "Viento fuerte, con ráfagas de 60 km/h"."""
+    windy = [p for p in periods if (p.wind or 0) >= _WINDY_SPEED or (p.gust or 0) >= _WINDY_GUST]
     if not windy:
         return None
-    text = f"Viento del {_DIRECTIONS.get(period.wind_from or '', 'variable')} de {_round(period.wind)} km/h"
-    if period.gust:
-        text += f" con ráfagas de {_round(period.gust)}"
-    return text
+    gust = max((p.gust or 0) for p in windy)
+    return f"Viento fuerte, con ráfagas de {_round(gust)} km/h." if gust else "Viento fuerte."
 
 
-def _smn_only_storm(period: Period) -> bool:
-    """SMN says storm, the chance says it's unlikely: the note that tells them apart."""
-    return period.smn_storm and (period.storm is None or period.storm < 25)
+def _degrees(value: float | None) -> str | None:
+    return None if value is None else f"{_round(value)} °C"
 
 
-def _sentences(periods: list[Period], now: datetime, first_is_current: bool, under_day: bool = False) -> list[str]:
-    """One sentence per period; the SMN-storm note only the first time it applies."""
-    sentences, noted = [], False
-    for index, period in enumerate(periods):
-        label = _label(period, now, first_is_current and index == 0, under_day)
-        sentences.append(_sentence(label, period, smn_note=not noted))
-        noted = noted or _smn_only_storm(period)
-    return sentences
-
-
-def _sentence(label: str, period: Period, smn_note: bool = True) -> str:
-    sky = _sky(period)
-    head = f"{label}, {sky}, {_temperature(period)}." if sky else f"{label}, {_temperature(period)}."
-    weather = [part for part in (_rain(period), _storm(period, smn_note)) if part]
-    if weather:
-        text = " y ".join(weather) if len(weather) == 2 and not weather[1].startswith("el SMN") else "; ".join(weather)
-        head += f" {text[0].upper()}{text[1:]}."
-    if wind := _wind(period):
-        head += f" {wind}."
-    return head
-
-
-def _label(period: Period, now: datetime, current: bool, under_day: bool = False) -> str:
-    """"Esta tarde", "A la noche", "Mañana a la tarde"; just "A la tarde" under a day's heading."""
-    days = (_local(period.start).date() - _local(now).date()).days
-    if days == 0 and current:
-        return f"Esta {period.name}"
-    if days == 0 or under_day:
-        return f"A la {period.name}"
-    if days == 1:
-        return f"Mañana a la {period.name}"
-    return f"El {_WEEKDAYS[_local(period.start).weekday()]} a la {period.name}"
+def _smn_day(daily: list[dict[str, Any]], day: Any) -> dict[str, Any]:
+    return next((d for d in daily if d.get("date") == day.isoformat()), {})
 
 
 def _periods_between(now: datetime, until: datetime, hourly, smn_periods) -> list[Period]:
     periods = []
     start = _period_start(now)
+    current_hour = _local(now).replace(minute=0, second=0, microsecond=0)
     while start < until:
         end = start + timedelta(hours=6)
-        current_hour = _local(now).replace(minute=0, second=0, microsecond=0)
         period = describe_period(max(start, current_hour), end, hourly, smn_periods)
         if period is not None:
             periods.append(period)
         start = end
     return periods
-
-
-# (rank, words) for the headline, most notable first.
-def _headline_weather(period: Period) -> tuple[int, str] | None:
-    if period.storm is not None and period.storm >= 25:
-        return 4, "posibles tormentas"
-    if period.rain is not None and period.rain >= 60:
-        return 3, "lluvia"
-    if period.rain is not None and period.rain >= 35:
-        return 2, "chance de lluvia"
-    if period.rain is not None and period.rain >= 15:
-        return 1, "poca chance de lluvia"
-    return None
-
-
-def _rain_words(pct: int) -> str:
-    if pct >= 85:
-        return "lluvia casi segura"
-    if pct >= 60:
-        return "probable lluvia"
-    if pct >= 35:
-        return "puede llover"
-    if pct >= 15:
-        return "poca chance de lluvia"
-    return "sin lluvia"
-
-
-def _range(periods: list[Period]) -> str | None:
-    if not periods:
-        return None
-    low = _round(min(p.temp_min for p in periods))
-    high = _round(max(p.temp_max for p in periods))
-    return f"{low} °C" if low == high else f"{low} a {high} °C"
 
 
 def build_forecast(
@@ -296,13 +263,14 @@ def build_forecast(
     smn_hourly: list[dict[str, Any]],
     daily: list[dict[str, Any]],
     rain_days: list[dict[str, Any]],
-) -> tuple[str, str] | None:
-    """(headline, full text), or None without Open-Meteo's hours to tell it from.
+) -> tuple[str, list[dict[str, str]]] | None:
+    """(headline, parts) where each part is {"titulo": "Hoy", "texto": ...}; None without Open-Meteo.
 
-    Temperatures all come from Open-Meteo's hours, so the text never says two
-    different maxima; SMN adds its condition for tomorrow and its storms.
+    One voice: the integration's own chances decide, told in words; when SMN
+    forecasts storms the chance doesn't see, "no se descartan tormentas".
+    The day's high and low are SMN's (the same the other cards show); the
+    hours (Open-Meteo) only say when the rain starts.
     """
-    from .const import CONDITION_LABELS_ES
     from .weather import format_condition
 
     if not hourly:
@@ -316,61 +284,71 @@ def build_forecast(
         smn_periods[when.replace(tzinfo=_ARG_TZ)] = format_condition(period.get("weather"))
 
     local_now = _local(now)
-    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    evening = local_now.hour >= 18
-    today = _periods_between(now, midnight, hourly, smn_periods)
-    whole_tomorrow = _periods_between(midnight, midnight + timedelta(days=1), hourly, smn_periods)
-    sentences = _sentences(today, now, first_is_current=True)
-    if today and not any(_rain(p) or _storm(p) for p in today):
-        sentences.append("Sin lluvia en lo que queda del día." if len(today) > 1 else "Sin lluvia.")
+    today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    evening_start = today_start + timedelta(hours=18)
+    midnight = today_start + timedelta(days=1)
+    smn_today = _smn_day(daily, today_start.date())
+    smn_tomorrow = _smn_day(daily, midnight.date())
+    parts: list[dict[str, str]] = []
+    headline = None
 
-    tomorrow_date = midnight.date()
-    weekday = _WEEKDAYS[tomorrow_date.weekday()]
-    rain_tomorrow = next((d for d in rain_days if d.get("fecha") == tomorrow_date.isoformat()), None)
-    tomorrow_smn = next((d for d in daily if d.get("date") == tomorrow_date.isoformat()), None)
-    smn_condition = format_condition(tomorrow_smn.get("weather")) if tomorrow_smn else None
-    smn_says = (
-        CONDITION_LABELS_ES.get(smn_condition, "").lower()
-        if smn_condition in ("lightning-rainy", "pouring", "rainy", "snowy", "snowy-rainy")
-        else None
-    )
-    day_parts = []
-    if rain_tomorrow is not None:
-        day_parts.append(f"{_rain_words(rain_tomorrow['probabilidad'])} ({rain_tomorrow['probabilidad']} %)")
-    if (span := _range(whole_tomorrow)) is not None:
-        day_parts.append(f"de {span}")
+    if local_now < evening_start:
+        day = _periods_between(now, evening_start, hourly, smn_periods)
+        if day:
+            high = smn_today.get("temp_max")
+            high = high if high is not None else max(p.temp_max for p in day)
+            sky = _sky(day)
+            weather, short = _weather(day)
+            text = f"{sky.capitalize()}, hasta {_degrees(high)}." if sky else f"Hasta {_degrees(high)}."
+            if weather:
+                text += f" {weather}"
+            else:
+                text = text[:-1] + ", sin lluvia."
+            if wind := _wind_words(day):
+                text += f" {wind}"
+            parts.append({"titulo": "Hoy", "texto": text})
+            low = smn_today.get("temp_min")
+            span = f"{_round(low)} a {_degrees(high)}" if low is not None else f"hasta {_degrees(high)}"
+            headline = f"Hoy: {short or sky or 'sin lluvia'} · {span}"
 
-    daytime_tomorrow = [p for p in whole_tomorrow if p.name != "madrugada"]
-    if evening and daytime_tomorrow:
-        # Tonight is short; tomorrow by periods, from the morning on.
-        by_period = _sentences(daytime_tomorrow, now, first_is_current=False, under_day=True)
-        sentences.append(f"Mañana {weekday}: {by_period[0][0].lower()}{by_period[0][1:]}")
-        sentences += by_period[1:]
-        if not any(_rain(p) or _storm(p) for p in daytime_tomorrow):
-            sentences.append("Sin lluvia.")
-        if day_parts:
-            sentences.append(f"En todo el día, {', '.join(day_parts)}.")
-    elif day_parts:
-        text = f"Mañana {weekday}: " + ", ".join(day_parts)
-        strongest = max((p for p in whole_tomorrow if p.storm is not None), key=lambda p: p.storm, default=None)
-        if strongest is not None and strongest.storm >= 25 and strongest.storm_from is not None:
-            text += (
-                f", con más chance de tormenta entre las {_clock(strongest.storm_from)}"
-                f" y las {_clock(strongest.storm_from + 3 * _HOUR)} ({strongest.storm} %)"
-            )
-        sentences.append(text + ".")
-    if smn_says and sentences:
-        sentences[-1] = sentences[-1].rstrip(".") + f"; el SMN pronostica {smn_says} para mañana."
+    night = _periods_between(max(now, evening_start), midnight, hourly, smn_periods)
+    if night:
+        low = smn_tomorrow.get("temp_min")
+        low = low if low is not None else min(p.temp_min for p in night)
+        sky = _sky(night)
+        weather, _ = _weather(night)
+        text = f"{sky.capitalize()}, mínima de {_degrees(low)}." if sky else f"Mínima de {_degrees(low)}."
+        if weather:
+            text += f" {weather}"
+        if wind := _wind_words(night):
+            text += f" {wind}"
+        parts.append({"titulo": "Esta noche", "texto": text})
 
-    # Headline: the most notable thing ahead (today; tomorrow after 18:00).
-    focus = daytime_tomorrow if evening and daytime_tomorrow else today
-    ranked = [(w, i, p) for i, p in enumerate(focus) if (w := _headline_weather(p))]
-    if ranked:
-        (_, words), _, period = max(ranked, key=lambda item: (item[0][0], -item[1]))
-        when = _label(period, now, period is focus[0] and not evening)
-        headline = f"{when} con {words}"
-    else:
-        headline = "Mañana sin lluvia" if evening else "Sin lluvia el resto del día"
-    if (span := _range(whole_tomorrow if evening else today)) is not None:
-        headline += f" · {span}"
-    return headline, " ".join(sentences)
+    tomorrow = _periods_between(midnight + timedelta(hours=6), midnight + timedelta(days=1), hourly, smn_periods)
+    if tomorrow:
+        rain_day = next((d for d in rain_days if d.get("fecha") == midnight.date().isoformat()), None)
+        weather, short = _weather(tomorrow, rain_day["probabilidad"] if rain_day else None)
+        sky = _sky(tomorrow)
+        low, high = smn_tomorrow.get("temp_min"), smn_tomorrow.get("temp_max")
+        if low is None or high is None:
+            low, high = min(p.temp_min for p in tomorrow), max(p.temp_max for p in tomorrow)
+        span = f"Entre {_round(low)} y {_degrees(high)}."
+        if weather:
+            text = f"{weather} {span}"
+        else:
+            text = f"{(sky or 'sin lluvia').capitalize()}{' y sin lluvia' if sky else ''}. {span}"
+        if wind := _wind_words(tomorrow):
+            text += f" {wind}"
+        weekday = _WEEKDAYS[midnight.weekday()]
+        parts.append({"titulo": f"Mañana {weekday}", "texto": text})
+        if headline is None:
+            headline = f"Mañana: {short or sky or 'sin lluvia'} · {_round(low)} a {_degrees(high)}"
+
+    if headline is None:
+        return None
+    return headline, parts
+
+
+def forecast_text(parts: list[dict[str, str]]) -> str:
+    """The parts as one text, a line each (for TTS and notifications)."""
+    return "\n".join(f"{part['titulo']}: {part['texto'][0].lower()}{part['texto'][1:]}" for part in parts)

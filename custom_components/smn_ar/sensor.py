@@ -64,7 +64,7 @@ from .const import (
 from . import devices
 from .devices import device_info
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
-from .narrative import build_forecast
+from .narrative import build_forecast, forecast_text
 from .nowcast import SOURCE_RADAR, SOURCE_SATELLITE, Nowcast, aviso_arrival, steering_motion
 from .weather import format_condition
 
@@ -1170,10 +1170,12 @@ class SMNShortTermSummarySensor(
         if forecast is None:
             attrs["pronostico"] = state
             return state, attrs
-        headline, text = forecast
+        headline, parts = forecast
         alerting = not state.startswith("Sin alertas vigentes")
+        text = forecast_text(parts)
         attrs["titular"] = headline
-        attrs["pronostico"] = f"{state.rstrip('.')}. {text}" if alerting else text
+        attrs["partes"] = parts
+        attrs["pronostico"] = f"{state.rstrip('.')}.\n{text}" if alerting else text
         return (state if alerting else headline)[:MAX_STATE_LENGTH], attrs
 
     @property
