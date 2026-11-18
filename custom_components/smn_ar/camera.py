@@ -30,7 +30,7 @@ from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -50,6 +50,8 @@ from .const import (
     RADAR_CAMERA_ATTRIBUTION,
     SATELLITE_ANIMATION_UPDATE_INTERVAL,
 )
+from . import devices
+from .devices import device_info
 from .coordinator import ArgentinaSMNData, ArgentinaSMNDataUpdateCoordinator
 from .alerts_map import build_country_alerts_jpeg
 from .radar import RadarLayers, fetch_radar_layers, render_radar_frames
@@ -188,6 +190,8 @@ class _SMNAlertsImageCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator]
     that rebuild runs waits for it (up to _FRESH_IMAGE_WAIT).
     """
 
+    _device_group = devices.MAPS
+
     _attr_has_entity_name = True
 
     def __init__(
@@ -209,12 +213,7 @@ class _SMNAlertsImageCamera(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator]
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        return device_info(self.hass, self._config_entry, self._device_group)
 
     def _current_alerts(self) -> list[dict[str, Any]]:
         # Nationwide list, not the per-location one: see
@@ -359,6 +358,8 @@ class _SMNSatelliteAnimationCamera(
     on GIBS (the radar camera does the same — see its docstring).
     """
 
+    _device_group = devices.MAPS
+
     _attr_has_entity_name = True
     _attr_attribution = GIBS_ATTRIBUTION
 
@@ -386,12 +387,7 @@ class _SMNSatelliteAnimationCamera(
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        return device_info(self.hass, self._config_entry, self._device_group)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

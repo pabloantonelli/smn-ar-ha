@@ -31,42 +31,63 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
   del proxy. El valor por defecto es `http://localhost:6942`. Si no
   funciona, usá el hostname que figura en la pestaña "Info" del add-on.
 - **Opciones** (Dispositivos y Servicios → SMN → Configurar): el **radio de
-  alertas cercanas**, 30 km por defecto. Lo usan todas las alertas por
-  cercanía y "Próxima lluvia o tormenta".
+  avisos cercanos**, 30 km por defecto. Lo usan los "Avisos cercanos" y
+  "Próxima lluvia o tormenta".
 
 ## Entidades
 
-### Alertas
+Cada ubicación crea cinco dispositivos, así cada entidad tiene un nombre corto
+que dice qué es: en "Córdoba · Avisos cercanos", "Tormenta" se enciende con un
+aviso de tormenta cerca.
 
-| Nombre | Se enciende cuando… |
-|---|---|
-| Alerta por tormenta / lluvia / viento / nevada / viento zonda | hay un aviso a corto plazo de ese tipo **dentro del radio** |
-| Alerta por granizo | hay un aviso a corto plazo que menciona granizo **dentro del radio** |
-| Alerta a corto plazo | hay cualquier aviso a corto plazo **dentro del radio** |
-| Alerta por altas / bajas temperaturas / niebla / polvo / humo / ceniza volcánica | el SMN tiene esa alerta para **tu zona** en la franja actual del día |
-| Alerta meteorológica | el SMN tiene **cualquier** alerta para tu zona en la franja actual del día |
-
-### Clima y pronóstico
+### Clima actual
 
 | Nombre | Qué muestra |
 |---|---|
-| Clima (`weather`) | Clima actual y pronóstico de 7 días del SMN. El pronóstico **por hora** es de [Open-Meteo](https://open-meteo.com) (3 días), porque el del SMN viene en franjas de 6 horas; si Open-Meteo no responde, vuelven las franjas del SMN. Su probabilidad de lluvia es la medida, no la de Open-Meteo, que exagera: cuando dice 70% para una hora, llueve en esa hora el 34% de las veces |
-| Temperatura, Sensación térmica, Humedad, Velocidad y Dirección del viento | Los valores actuales, como sensores sueltos para gráficos y automatizaciones |
-| Pronóstico de hoy / de mañana | Condición, máxima y mínima |
-| Próxima lluvia o tormenta | Cuándo es la próxima lluvia o tormenta ([cómo se calcula](#próxima-lluvia-o-tormenta)) |
-| Probabilidad de tormenta | La chance de tormenta en las próximas 3 horas, y en `proximas_horas` la de cada 3 horas del día siguiente ([cómo se calcula](#probabilidad-de-tormenta)) |
-| Lluvia mañana | La chance de que llueva mañana, y en `dias` la de mañana, pasado y el día siguiente, cada una con la del SMN al lado ([cómo se calcula](#lluvia-mañana)) |
-| Pronóstico de corto plazo | Una frase que resume la situación, lista para notificaciones o para leerla en voz alta |
-| Avisos por provincia (país) | Los avisos vigentes en todo el país, agrupados por provincia |
+| (el clima, `weather`) | Clima actual y pronóstico de 7 días del SMN. El pronóstico **por hora** es de [Open-Meteo](https://open-meteo.com) (3 días), porque el del SMN viene en franjas de 6 horas; si Open-Meteo no responde, vuelven las franjas del SMN. Su probabilidad de lluvia es la medida, no la de Open-Meteo, que exagera: cuando dice 70% para una hora, llueve en esa hora el 34% de las veces |
+| Temperatura, Sensación térmica, Humedad, Viento, Dirección del viento | Los valores actuales, como sensores sueltos para gráficos y automatizaciones |
 
-### Cámaras
+### Pronóstico
+
+| Nombre | Qué muestra |
+|---|---|
+| Hoy / Mañana | Condición, máxima y mínima del SMN |
+| Próxima lluvia o tormenta | Cuándo es la próxima lluvia o tormenta ([cómo se calcula](#próxima-lluvia-o-tormenta)) |
+| Chance de tormenta en 3 h | La chance de tormenta en las próximas 3 horas, y en `proximas_horas` la de cada 3 horas del día siguiente ([cómo se calcula](#chance-de-tormenta-en-3-h)) |
+| Chance de lluvia mañana | La chance de que llueva mañana, y en `dias` la de mañana, pasado y el día siguiente, cada una con la del SMN al lado ([cómo se calcula](#chance-de-lluvia-mañana)) |
+| Resumen | Una frase que resume alertas, avisos y el pronóstico de hoy, lista para notificaciones o para leerla en voz alta |
+
+### Avisos cercanos
+
+Los avisos a muy corto plazo del SMN: valen para **ahora** (duran 1 a 2 horas)
+y se encienden si el aviso está **dentro del radio** de tu ubicación.
+
+| Nombre | Se enciende cuando… |
+|---|---|
+| Tormenta / Lluvia / Viento / Nevada / Zonda | hay un aviso de ese tipo dentro del radio |
+| Granizo | hay un aviso que menciona granizo dentro del radio |
+| Cualquier aviso | hay cualquier aviso dentro del radio |
+| Avisos en el país | (sensor) los avisos vigentes en todo el país, agrupados por provincia |
+
+### Alertas de la zona
+
+Las alertas que el SMN pronostica para **tu zona** (uno o varios
+departamentos): se encienden durante la **franja del día** con alerta
+(madrugada, mañana, tarde o noche, de 6 horas).
+
+| Nombre | Se enciende cuando… |
+|---|---|
+| Altas temperaturas / Bajas temperaturas / Niebla / Polvo / Humo / Ceniza volcánica | el SMN tiene esa alerta para tu zona en la franja actual |
+| Cualquier alerta | el SMN tiene cualquier alerta para tu zona en la franja actual, también de tormenta o lluvia. `today_alerts` trae todo lo pronosticado para hoy |
+
+### Mapas
 
 | Nombre | Qué muestra |
 |---|---|
 | Radar | Animación de los últimos ~100 min de las nubes de tormenta vistas por satélite (infrarrojo), ~300 km alrededor, con el clima actual y los avisos cercanos. Los radares (SINARAME y RainViewer) no se dibujan: se usan para calcular la [próxima lluvia](#próxima-lluvia-o-tormenta) |
-| Avisos Argentina | Mapa del país con los polígonos de todos los avisos vigentes y tu ubicación |
-| Satélite Argentina / Satélite provincia | Animación satelital de los últimos ~100 min en color real. De noche pasa sola a una vista nocturna |
-| … Infrarrojo | Igual, mostrando la temperatura de los topes de nube. Sirve para ver la intensidad de una tormenta |
+| Avisos | Mapa del país con los polígonos de todos los avisos vigentes y tu ubicación |
+| Satélite / Satélite provincia | Animación satelital de los últimos ~100 min en color real. De noche pasa sola a una vista nocturna |
+| … infrarrojo | Igual, mostrando la temperatura de los topes de nube. Sirve para ver la intensidad de una tormenta |
 
 ### Actualización
 
@@ -78,7 +99,10 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 
 Para encontrar el `entity_id` de una entidad, entrá a Herramientas de
 desarrollo → Estados y filtrá por el nombre. Home Assistant lo arma con el
-nombre que tenía la entidad cuando se creó.
+nombre que tenía la entidad cuando se creó: si instalaste antes de la 1.13.0,
+tus entidades conservan sus `entity_id` (por ejemplo
+`binary_sensor.cordoba_alerta_por_tormenta`) aunque ahora se vean con el
+nombre nuevo.
 
 ## Cómo funcionan las alertas
 
@@ -86,8 +110,8 @@ El SMN publica dos tipos de información, y cada alerta usa la más precisa
 que existe para su fenómeno. Todas tienen el atributo **`criterio`**, que
 explica en una frase qué la enciende.
 
-**Por cercanía** (tormenta, lluvia, viento, nevada, viento zonda, granizo y
-"Alerta a corto plazo"):
+**Avisos cercanos** (tormenta, lluvia, viento, nevada, zonda, granizo y
+"Cualquier aviso"):
 
 - **Fuente**: los avisos a muy corto plazo del SMN. Duran 1 a 2 h y cada
   uno trae su polígono, así que se mide la distancia real desde tu
@@ -98,15 +122,15 @@ explica en una frase qué la enciende.
   LLUVIAS INTENSAS, RÁFAGAS Y GRANIZO" enciende tormenta, lluvia, viento y
   granizo. El viento zonda tiene su propia alerta.
 
-**Por zona** (temperaturas, niebla, polvo, humo, ceniza volcánica y "Alerta
-meteorológica"):
+**Alertas de la zona** (temperaturas, niebla, polvo, humo, ceniza volcánica
+y "Cualquier alerta"):
 
 - **Fuente**: el SMN sólo da un pronóstico para la zona a la que pertenece
   tu ubicación (uno o varios departamentos).
 - **Cuándo se encienden**: el pronóstico trae un nivel (amarillo, naranja o
   rojo) por franja del día: madrugada 0–6, mañana 6–12, tarde 12–18 y noche
   18–24. La alerta se enciende sólo durante las franjas con alerta.
-- **Alerta meteorológica**: es el **anticipo**. Incluye también tormenta y
+- **Cualquier alerta**: es el **anticipo**. Incluye también tormenta y
   lluvia, y se emite horas antes que los avisos, pero no mide distancia. El
   atributo `today_alerts` muestra todo lo pronosticado para hoy.
 - **Ojo con `description`**: es el texto genérico del SMN para ese nivel y
@@ -152,7 +176,7 @@ fuentes:
    próximos días.
 4. **Pronóstico horario** de [Open-Meteo](https://open-meteo.com): una hora
    con 60% o más de probabilidad y al menos 0,1 mm. Es tormenta si además
-   la [probabilidad de tormenta](#probabilidad-de-tormenta) de las 3 horas
+   la [chance de tormenta](#chance-de-tormenta-en-3-h) de las 3 horas
    desde ella es de 25% o más (y la hora trae algo de lluvia: 30% y 0,1 mm).
 5. **Pronóstico del SMN** de tu localidad: una franja con lluvia probable
    (el medio del rango de probabilidad en 40% o más; "10–30%" no cuenta) o
@@ -216,7 +240,7 @@ primary: "{{ state_attr(entity, 'titulo') }}"
 secondary: "{{ state_attr(entity, 'detalle') }}"
 ```
 
-## Probabilidad de tormenta
+## Chance de tormenta en 3 h
 
 La chance de que haya tormenta (truenos en el aeropuerto o cerca) en las
 próximas 3 horas. Pondera, con pesos ajustados contra un año de observaciones
@@ -237,7 +261,7 @@ los dos modelos extra no responden, `fuente` lo dice y se calcula sin ellos.
 Atributos: `proximas_horas` (cada 3 horas del día siguiente), `maxima` y
 `maxima_desde`.
 
-## Lluvia mañana
+## Chance de lluvia mañana
 
 La chance de que llueva en algún momento de mañana, según cuánta lluvia da el
 AIFS de ECMWF para el día entero. Es el modelo que mejor acertó si llueve o no
@@ -260,7 +284,7 @@ HA_TOKEN=<token de larga duración> python3 scripts/verify_next_rain.py \
 ```
 
 El recorder guarda 10 días por defecto. Con más días hay más lluvias para
-juzgar, y queda registro de "Lluvia mañana" y del SMN para compararlos:
+juzgar, y queda registro de "Chance de lluvia mañana" y del SMN para compararlos:
 
 ```yaml
 recorder:
@@ -288,7 +312,7 @@ action:
       message: "{{ trigger.event.data.added[0].title }}"
 ```
 
-"Alerta meteorológica" dispara además `smn_ar_alert_created`,
+"Cualquier alerta" (en Alertas de la zona) dispara además `smn_ar_alert_created`,
 `smn_ar_alert_updated` (cambio de nivel) y `smn_ar_alert_cleared` cuando
 cambian las alertas de tu zona.
 

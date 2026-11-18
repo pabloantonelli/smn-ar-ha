@@ -3,11 +3,11 @@
 Alerts come in two flavors, depending on what SMN publishes for each type:
 
 - By proximity (storm, rain, wind, snow, zonda wind, hail, and the generic
-  "Alerta a corto plazo"): SMN issues these as avisos a muy corto plazo
+  "Cualquier aviso", all in the "Avisos cercanos" device): SMN issues these as avisos a muy corto plazo
   with a polygon, so they turn on when a matching aviso is within the
   radius configured in the integration's options.
 - By zone (temperatures, fog, dust, smoke, volcanic ash, and the summary
-  "Alerta meteorológica"): SMN only forecasts these for the whole alert
+  "Cualquier alerta", in the "Alertas de la zona" device): SMN only forecasts these for the whole alert
   zone the location belongs to, with a level per period of the day — they
   turn on during the periods SMN forecasts an alert for.
 
@@ -25,10 +25,10 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
+from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_utc_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -53,6 +53,8 @@ from .const import (
     HAIL_NEARBY_KEYWORDS,
     wind_cardinal,
 )
+from . import devices
+from .devices import device_info
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -110,6 +112,8 @@ def _aviso_summary(distance: float, bearing: float, alert: dict[str, Any]) -> di
 class _SMNAlertBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], BinarySensorEntity):
     """Shared device info, plus an optional state refresh when the period of the day changes."""
 
+    _device_group = devices.ZONE
+
     _attr_device_class = BinarySensorDeviceClass.SAFETY
     _attr_has_entity_name = True
     # Zone alerts follow SMN's per-period levels, which change at fixed
@@ -128,12 +132,7 @@ class _SMNAlertBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Binary
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        return device_info(self.hass, self._config_entry, self._device_group)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -159,6 +158,8 @@ class _SMNNearbyAlertBase(_SMNAlertBase):
     Uses the nationwide warning/shortterm list, whose avisos come with SMN's
     own polygon: distance 0 means the location is inside it.
     """
+
+    _device_group = devices.NEARBY
 
     _keywords: tuple[tuple[str, ...], tuple[str, ...]] | None = None
 
@@ -193,7 +194,7 @@ class _SMNNearbyAlertBase(_SMNAlertBase):
 
 
 class SMNNearbyEventAlertSensor(_SMNNearbyAlertBase):
-    """Alerta por tormenta / lluvia / viento / nevada / viento zonda: by proximity.
+    """Avisos cercanos: tormenta / lluvia / viento / nevada / zonda, by proximity.
 
     SMN's zone forecast for the same event is kept as context in the
     zone_* attributes — it doesn't turn the sensor on, since the zone can be
@@ -236,7 +237,7 @@ class SMNNearbyEventAlertSensor(_SMNNearbyAlertBase):
 
 
 class SMNZoneEventAlertSensor(_SMNAlertBase):
-    """Alerta por temperaturas / niebla / polvo / humo / ceniza: SMN's zone forecast, current period."""
+    """Alertas de la zona: temperaturas / niebla / polvo / humo / ceniza, current period."""
 
     _refresh_on_period_change = True
 
@@ -288,7 +289,7 @@ class SMNZoneEventAlertSensor(_SMNAlertBase):
 
 
 class SMNAlertSensor(_SMNAlertBase):
-    """Alerta meteorológica: any SMN zone alert in the current period.
+    """Alertas de la zona, Cualquier alerta: any SMN zone alert in the current period.
 
     This is the anticipation sensor — SMN's zone forecast, issued hours
     ahead, for every event type. It doesn't measure distance (the zone is
@@ -464,7 +465,7 @@ class SMNAlertSensor(_SMNAlertBase):
 
 
 class SMNShortTermAlertSensor(_SMNNearbyAlertBase):
-    """Alerta a corto plazo: any short-term warning (aviso) within the configured radius."""
+    """Avisos cercanos, Cualquier aviso: any short-term warning (aviso) within the configured radius."""
 
     _attr_translation_key = "short_term_alert"
     _attr_icon = "mdi:alert-circle"
@@ -541,7 +542,7 @@ def _zone_hail_mentions(alerts_data: dict[str, Any]) -> list[str]:
 
 
 class SMNHailAlertSensor(_SMNNearbyAlertBase):
-    """Alerta por granizo: a short-term warning that mentions hail within the configured radius.
+    """Avisos cercanos, Granizo: a short-term warning that mentions hail within the configured radius.
 
     SMN's warning API has no dedicated hail event, so this matches "granizo"
     in the avisos' titles. Replaces the former separate "Granizo cercano".
