@@ -36,6 +36,8 @@ from .const import (
     NOWCAST_UPDATE_INTERVAL,
     OPEN_METEO_FORECAST_DAYS,
     OPEN_METEO_HOURLY_FIELDS,
+    OPEN_METEO_MODELS,
+    OPEN_METEO_MODELS_FORECAST_DAYS,
     OPEN_METEO_URL,
     SHORTTERM_SCAN_INTERVAL,
 )
@@ -123,6 +125,8 @@ class ArgentinaSMNData:
         self.sun: dict[str, Any] = {}
         # Open-Meteo's hourly forecast (see _fetch_open_meteo_hourly).
         self.open_meteo_hourly: list[dict[str, Any]] = []
+        # AIFS and UKMO rain per hour, 5 days (see OPEN_METEO_MODELS).
+        self.open_meteo_models: list[dict[str, Any]] = []
         self._last_full_fetch: float | None = None
 
     @property
@@ -327,6 +331,42 @@ class ArgentinaSMNData:
             ]
         except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, TypeError, ValueError) as err:
             _LOGGER.debug("Error fetching Open-Meteo hourly forecast: %s", err)
+        await self._fetch_open_meteo_models()
+        # Each hour also carries the two models' rain (missing ones: None).
+        by_hour = {hour["when"]: hour for hour in self.open_meteo_models}
+        for hour in self.open_meteo_hourly:
+            models = by_hour.get(hour["when"], {})
+            for key in OPEN_METEO_MODELS:
+                hour[key] = models.get(key)
+
+    async def _fetch_open_meteo_models(self) -> None:
+        """Fetch the AIFS and UKMO rain per hour (OPEN_METEO_MODELS).
+
+        A separate request: asking for several models suffixes every
+        variable. Keeps the previous data on failure; without them the
+        probabilities fall back to best_match's alone.
+        """
+        params = {
+            "latitude": self._latitude,
+            "longitude": self._longitude,
+            "hourly": "precipitation",
+            "models": ",".join(name.removeprefix("precipitation_") for name in OPEN_METEO_MODELS.values()),
+            "timeformat": "unixtime",
+            "forecast_days": OPEN_METEO_MODELS_FORECAST_DAYS,
+        }
+        try:
+            async with async_timeout.timeout(10):
+                response = await self._session.get(OPEN_METEO_URL, params=params)
+                response.raise_for_status()
+                data = await response.json()
+            hourly = data["hourly"]
+            columns = [hourly[name] for name in OPEN_METEO_MODELS.values()]
+            self.open_meteo_models = [
+                {"when": datetime.fromtimestamp(timestamp, timezone.utc), **dict(zip(OPEN_METEO_MODELS, values))}
+                for timestamp, *values in zip(hourly["time"], *columns)
+            ]
+        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, TypeError, ValueError) as err:
+            _LOGGER.debug("Error fetching Open-Meteo models: %s", err)
 
     async def _fetch_sun(self, location_id: str) -> None:
         """Fetch sunrise/sunset data."""

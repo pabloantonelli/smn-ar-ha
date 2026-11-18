@@ -147,6 +147,12 @@
       },
       "next_rain": {
         "name": "Next rain or storm"
+      },
+      "storm_odds": {
+        "name": "Thunderstorm chance"
+      },
+      "rain_tomorrow": {
+        "name": "Rain tomorrow"
       }
     }
   }

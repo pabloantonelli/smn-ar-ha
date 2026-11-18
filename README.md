@@ -54,6 +54,8 @@ Cloudflare. Por eso la integración necesita un add-on que hace de proxy (ver
 | Temperatura, Sensación térmica, Humedad, Velocidad y Dirección del viento | Los valores actuales, como sensores sueltos para gráficos y automatizaciones |
 | Pronóstico de hoy / de mañana | Condición, máxima y mínima |
 | Próxima lluvia o tormenta | Cuándo es la próxima lluvia o tormenta ([cómo se calcula](#próxima-lluvia-o-tormenta)) |
+| Probabilidad de tormenta | La chance de tormenta en las próximas 3 horas, y en `proximas_horas` la de cada 3 horas del día siguiente ([cómo se calcula](#probabilidad-de-tormenta)) |
+| Lluvia mañana | La chance de que llueva mañana, y en `dias` la de mañana, pasado y el día siguiente, cada una con la del SMN al lado ([cómo se calcula](#lluvia-mañana)) |
 | Pronóstico de corto plazo | Una frase que resume la situación, lista para notificaciones o para leerla en voz alta |
 | Avisos por provincia (país) | Los avisos vigentes en todo el país, agrupados por provincia |
 
@@ -149,7 +151,9 @@ fuentes:
 3. **Alerta de zona**: de lluvia o tormenta, por franja, para hoy y los
    próximos días.
 4. **Pronóstico horario** de [Open-Meteo](https://open-meteo.com): una hora
-   con 60% o más de probabilidad y al menos 0,1 mm, o con tormenta.
+   con 60% o más de probabilidad y al menos 0,1 mm. Es tormenta si además
+   la [probabilidad de tormenta](#probabilidad-de-tormenta) de las 3 horas
+   desde ella es de 25% o más (y la hora trae algo de lluvia: 30% y 0,1 mm).
 5. **Pronóstico del SMN** de tu localidad: una franja con lluvia probable
    (el medio del rango de probabilidad en 40% o más; "10–30%" no cuenta) o
    con tormenta aunque la probabilidad sea baja.
@@ -179,12 +183,16 @@ Atributos principales:
   fuente no es un pronóstico.
 - **`curva`**: la probabilidad acumulada hora por hora, hasta 6 horas, desde
   como mucho 2 horas antes del inicio. Combina las horas de Open-Meteo y corrige
-  que las horas de lluvia vienen juntas, calibrada contra un año de
-  observaciones de 15 aeropuertos. Es la misma con o sin alerta: las alertas y
-  las franjas del SMN deciden si hay aviso, no cuánto da el número.
+  que las horas de lluvia vienen juntas, y suma la lluvia que dan otros dos
+  modelos, el AIFS de ECMWF y el del UK Met Office (sin ellos, se calcula
+  sólo con Open-Meteo). Calibrada contra un año de observaciones de 12
+  aeropuertos argentinos. Es la misma con o sin alerta: las alertas y las
+  franjas del SMN deciden si hay aviso, no cuánto da el número.
 - **`probabilidad_smn`**: el máximo del rango que da el SMN para la franja,
   tal cual, sin calibrar: no es la chance de que llueva.
 - **`tipo`**: `lluvia` o `tormenta`.
+- **`probabilidad_tormenta`**: para el pronóstico horario, la probabilidad de
+  tormenta en las 3 horas desde el inicio.
 - **`fuente`**: `radar SINARAME <radar>`, `radar`, `satélite infrarrojo`,
   `aviso cercano`, `alerta de zona`, `pronóstico horario` o `pronóstico`.
 - **`minutos`**: cuánto falta.
@@ -208,6 +216,37 @@ primary: "{{ state_attr(entity, 'titulo') }}"
 secondary: "{{ state_attr(entity, 'detalle') }}"
 ```
 
+## Probabilidad de tormenta
+
+La chance de que haya tormenta (truenos en el aeropuerto o cerca) en las
+próximas 3 horas. Pondera, con pesos ajustados contra un año de observaciones
+de 12 aeropuertos argentinos:
+
+- la probabilidad de lluvia de Open-Meteo,
+- la lluvia que dan el AIFS de ECMWF y el modelo del UK Met Office, los dos
+  que más suman en Argentina,
+- la energía disponible para tormentas (CAPE),
+- la hora del día.
+
+Probada sobre meses que no se usaron para ajustarla, tiene 35% de skill (0%
+es adivinar con el promedio, 100% es perfecta); sin los dos modelos extra,
+25%. El código de tormenta que da el modelo, que se usaba antes, sólo
+detectaba el 22% de las tormentas y la mitad de las veces no pasaba nada. Si
+los dos modelos extra no responden, `fuente` lo dice y se calcula sin ellos.
+
+Atributos: `proximas_horas` (cada 3 horas del día siguiente), `maxima` y
+`maxima_desde`.
+
+## Lluvia mañana
+
+La chance de que llueva en algún momento de mañana, según cuánta lluvia da el
+AIFS de ECMWF para el día entero. Es el modelo que mejor acertó si llueve o no
+a 1, 2 y 3 días en Córdoba, Santa Fe, Tucumán y Ezeiza (en Mendoza le ganó
+el del UK Met Office). `dias` trae mañana, pasado y el día siguiente, cada uno
+con `probabilidad`, `mm` y `probabilidad_smn`, la más alta que da el SMN ese
+día. El SMN no publica pronósticos pasados: guardar los dos en el historial
+de Home Assistant permite compararlos más adelante.
+
 ### Qué tan bien le pega en tu casa
 
 `scripts/verify_next_rain.py` cruza el historial del sensor en tu Home
@@ -220,8 +259,13 @@ HA_TOKEN=<token de larga duración> python3 scripts/verify_next_rain.py \
     --entity sensor.casa_proxima_lluvia --station SACO
 ```
 
-El recorder guarda 10 días por defecto. Con más días (`purge_keep_days`) hay
-más lluvias para juzgar.
+El recorder guarda 10 días por defecto. Con más días hay más lluvias para
+juzgar, y queda registro de "Lluvia mañana" y del SMN para compararlos:
+
+```yaml
+recorder:
+  purge_keep_days: 60
+```
 
 ## Automatizaciones
 
