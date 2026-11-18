@@ -264,26 +264,45 @@ secondary: "{{ state_attr(entity, 'detalle') }}"
 
 ## Resumen
 
-Cuenta el pronóstico por franjas del día (madrugada, mañana, tarde y noche) y
-cambia según la hora:
+El pronóstico en pocas palabras, como lo diría una persona, en tres partes:
 
-- **Hasta las 18**: lo que queda de hoy, franja por franja, y una línea para
-  mañana.
-- **Desde las 18**: esta noche y mañana franja por franja.
+- **Hoy** (hasta las 18): cómo va a estar el cielo, la máxima, y si puede
+  llover o haber tormentas, y desde qué hora.
+- **Esta noche**: el cielo, la mínima y la lluvia.
+- **Mañana**: lluvia y tormentas, y la mínima y la máxima.
 
-Cada franja dice cómo está el cielo, la máxima o la mínima, si puede llover y
-desde qué hora, y si hay chance de tormenta. El viento aparece sólo si es
-fuerte, y la sensación térmica sólo si se aleja de la temperatura. Las
-chances son las mismas que las de "Próxima lluvia o tormenta" y "Chance de
-tormenta en 3 h", y las temperaturas salen todas del pronóstico por hora, así
-el texto no se contradice. Cuando el SMN anuncia tormentas que no se ven
-probables, lo dice. Si hay un aviso o una alerta, va primero.
+Por ejemplo:
 
-Por ejemplo: "Esta tarde, nublada, con máxima de 23 °C a las 18. Baja chance
-de lluvia (32 %); el SMN anuncia tormentas, aunque por ahora se ven poco
-probables (5 %). A la noche, parcialmente nublada, con mínima de 18 °C.
-Mañana jueves: lluvia casi segura (97 %), de 16 a 22 °C, con más chance de
-tormenta entre las 15 y las 18 (26 %)."
+> **Hoy:** nublado, hasta 26 °C. No se descartan lluvias ni tormentas.
+> **Esta noche:** parcialmente nublado, mínima de 18 °C.
+> **Mañana jueves:** lluvia casi segura, sobre todo a la tarde, con posibles
+> tormentas. Entre 18 y 26 °C.
+
+Cómo decide qué decir:
+
+- **Una sola respuesta.** Las chances de lluvia y de tormenta son las de la
+  integración, dichas en palabras: "no se descarta alguna lluvia" (15-34%),
+  "puede llover" (35-59%), "probablemente llueva" (60-84%), "lluvia casi
+  segura" (85% o más). Si el SMN anuncia tormentas que esa chance no ve, dice
+  "no se descartan tormentas", sin explicar quién dice qué.
+- **Las temperaturas son las del SMN**, las mismas de las tarjetas "Hoy" y
+  "Mañana". El pronóstico por hora sólo dice desde cuándo llueve.
+- **El viento**, sólo si es fuerte.
+
+El estado es un titular ("Hoy: alguna lluvia, no se descartan tormentas ·
+19 a 26 °C"). Si hay un aviso o una alerta vigente, el estado es ese aviso,
+como antes. `pronostico` tiene el texto completo, un renglón por parte (para
+notificaciones o para leerlo en voz alta), y `partes` cada parte por separado
+(`titulo` y `texto`), para armar una tarjeta:
+
+```yaml
+type: markdown
+content: >-
+  {% for p in state_attr('sensor.casa_pronostico_de_corto_plazo', 'partes') or [] %}
+  **{{ p.titulo }}:** {{ p.texto }}
+
+  {% endfor %}
+```
 
 ## Chance de tormenta en 3 h
 

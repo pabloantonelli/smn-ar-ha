@@ -1,7 +1,7 @@
 """The Resumen's forecast text (narrative.py)."""
 from datetime import datetime, timedelta, timezone
 
-from custom_components.smn_ar.narrative import build_forecast
+from custom_components.smn_ar.narrative import build_forecast, forecast_text
 
 ARG = timezone(timedelta(hours=-3))
 UTC = timezone.utc
@@ -39,48 +39,61 @@ def _at(day: int, hour: int) -> datetime:
     return START + timedelta(days=day, hours=hour)
 
 
-def test_morning_tells_the_rest_of_the_day_and_tomorrow() -> None:
-    headline, text = build_forecast(_at(0, 8), _hours(), [], [], [{"fecha": "2026-10-08", "probabilidad": 9}])
-    assert headline == "Sin lluvia el resto del día · 16 a 26 °C"
+SMN_DAYS = [
+    {"date": "2026-10-07", "temp_min": 15, "temp_max": 27, "weather": {"id": 3}},
+    {"date": "2026-10-08", "temp_min": 16, "temp_max": 28, "weather": {"id": 3}},
+]
+
+
+def _text(now, hours, smn=(), daily=SMN_DAYS, rain_days=()):
+    headline, parts = build_forecast(now, hours, list(smn), list(daily), list(rain_days))
+    return headline, forecast_text(parts), parts
+
+
+def test_a_dry_day_in_three_short_parts() -> None:
+    headline, text, parts = _text(_at(0, 8), _hours(), rain_days=[{"fecha": "2026-10-08", "probabilidad": 9}])
+    assert headline == "Hoy: despejado · 15 a 27 °C"
+    assert [p["titulo"] for p in parts] == ["Hoy", "Esta noche", "Mañana jueves"]
     assert text == (
-        "Esta mañana, despejada, entre 16 y 21 °C. "
-        "A la tarde, despejada, con máxima de 26 °C a las 16. "
-        "A la noche, despejada, con mínima de 18 °C. "
-        "Sin lluvia en lo que queda del día. "
-        "Mañana jueves: sin lluvia (9 %), de 14 a 26 °C."
+        "Hoy: despejado, hasta 27 °C, sin lluvia.\n"
+        "Esta noche: despejado, mínima de 16 °C.\n"
+        "Mañana jueves: despejado y sin lluvia. Entre 16 y 28 °C."
     )
 
 
-def test_afternoon_storms_lead_the_headline() -> None:
+def test_no_percentages_and_smn_temperatures() -> None:
+    rainy = [_at(0, h) for h in range(14, 18)]
+    _, text, _ = _text(_at(0, 9), _hours(rainy=rainy))
+    assert "%" not in text
+    assert "hasta 27 °C" in text  # SMN's high, not the hours' 26
+
+
+def test_afternoon_storms() -> None:
     stormy = [_at(0, h) for h in range(15, 19)]
-    headline, text = build_forecast(_at(0, 9), _hours(stormy=stormy), [], [], [])
-    assert headline.startswith("A la tarde con posibles tormentas")
-    assert "Lluvia casi segura desde las 15" in text
-    assert "tormentas probables" in text or "posibles tormentas" in text
+    headline, text, parts = _text(_at(0, 9), _hours(stormy=stormy))
+    assert headline.startswith("Hoy: lluvia, tormentas")
+    assert parts[0]["texto"] == "Con algunas nubes, hasta 27 °C. Lluvia casi segura, desde las 15, con tormentas."
 
 
-def test_smn_storm_the_models_dont_see() -> None:
+def test_smn_storm_the_chance_doesnt_see_is_one_hedge() -> None:
     smn = [{"date": "2026-10-07", "time": "12:00", "weather": {"id": 76}}]
-    _, text = build_forecast(_at(0, 9), _hours(), smn, [], [])
-    assert "A la tarde, despejada, con máxima de 26 °C a las 16. El SMN anuncia tormentas, aunque por ahora se ven poco probables (0 %)." in text
+    headline, _, parts = _text(_at(0, 9), _hours(), smn=smn)
+    assert parts[0]["texto"] == "Despejado, hasta 27 °C. No se descartan tormentas a la tarde."
+    assert "SMN" not in parts[0]["texto"] and "modelo" not in parts[0]["texto"]
+    assert headline == "Hoy: no se descartan tormentas · 15 a 27 °C"
 
 
-def test_evening_tells_tomorrow_by_periods() -> None:
+def test_evening_is_tonight_and_tomorrow() -> None:
     rainy = [_at(1, h) for h in range(13, 18)]
-    headline, text = build_forecast(
-        _at(0, 20), _hours(rainy=rainy), [], [{"date": "2026-10-08", "weather": {"id": 76}}],
-        [{"fecha": "2026-10-08", "probabilidad": 90}],
-    )
-    assert headline.startswith("Mañana a la tarde con lluvia")
-    assert text.startswith("Esta noche,")
-    assert "Mañana jueves: a la mañana," in text
-    assert "A la tarde, nublada," in text
-    assert text.endswith("En todo el día, lluvia casi segura (90 %), de 14 a 26 °C; el SMN pronostica tormenta para mañana.")
+    headline, text, parts = _text(_at(0, 20), _hours(rainy=rainy), rain_days=[{"fecha": "2026-10-08", "probabilidad": 90}])
+    assert [p["titulo"] for p in parts] == ["Esta noche", "Mañana jueves"]
+    assert headline == "Mañana: lluvia · 16 a 28 °C"
+    assert parts[1]["texto"] == "Lluvia casi segura, desde las 13. Entre 16 y 28 °C."
 
 
 def test_strong_wind_is_mentioned() -> None:
-    _, text = build_forecast(_at(0, 13), _hours(windy=[_at(0, 15)]), [], [], [])
-    assert "Viento del noreste de 35 km/h con ráfagas de 60." in text
+    _, _, parts = _text(_at(0, 13), _hours(windy=[_at(0, 15)]))
+    assert parts[0]["texto"].endswith("Viento fuerte, con ráfagas de 60 km/h.")
 
 
 def test_without_open_meteo_nothing_to_tell() -> None:
@@ -114,13 +127,14 @@ async def test_summary_entity(hass, enable_custom_integrations, freezer) -> None
         await hass.async_block_till_done()
         entity_id = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_short_term_summary")
         state = hass.states.get(entity_id)
-        assert state.state == "Sin lluvia el resto del día · 16 a 26 °C"
+        assert state.state == "Hoy: despejado · hasta 26 °C"
         assert state.attributes["titular"] == state.state
-        assert state.attributes["pronostico"].startswith("Esta mañana, despejada")
+        assert state.attributes["pronostico"].startswith("Hoy: despejado, hasta 26 °C, sin lluvia.\nEsta noche:")
+        assert [p["titulo"] for p in state.attributes["partes"]] == ["Hoy", "Esta noche", "Mañana jueves"]
 
         avisos.append({"title": "TORMENTAS FUERTES", "end_date": "2026-10-07T10:00:00-03:00", "zones": []})
         await hass.data[DOMAIN][entry.entry_id].async_refresh()
         await hass.async_block_till_done()
         state = hass.states.get(entity_id)
         assert state.state.startswith("⚠️ Tormentas fuertes")
-        assert state.attributes["pronostico"].startswith("⚠️ Tormentas fuertes (vigente hasta las 10:00). Esta mañana")
+        assert state.attributes["pronostico"].startswith("⚠️ Tormentas fuertes (vigente hasta las 10:00).\nHoy:")
