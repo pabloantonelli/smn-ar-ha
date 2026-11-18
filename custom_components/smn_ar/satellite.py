@@ -324,49 +324,95 @@ def _draw_caption(
         )
 
 
-_IR_LEGEND_STEPS = [
-    ((60, 60, 65, 235), "Nubes altas"),
-    ((40, 180, 220, 235), "Frío"),
-    ((60, 210, 90, 235), "Más frío"),
-    ((235, 220, 40, 235), "Muy frío"),
-    ((235, 50, 40, 235), "Tormenta severa"),
+# What the infrared colors mean for rain and storms, the same on every map
+# and always shown. Each row is a range of cloud-top temperature in GIBS'
+# Band13 palette (see nowcast._IR_PALETTE), its swatch a color from it:
+# - about -20..-30 °C (cyans to navy): clouds that don't rain.
+# - -31..-45 °C (greens): thicker clouds, not deep enough to rain much.
+# - -46..-57 °C (yellows): showers possible. At -52 °C it rained under them
+#   less than half the time (METARs at 15 airports, see nowcast.IR_RAIN_COLDNESS).
+# - -58..-61 °C (oranges): from here it rained 77-87% of the time.
+# - -62..-70 °C (reds): a storm (nowcast.IR_STORM_COLDNESS).
+# - -71 °C and colder (a gray core inside dark red, then purples): very deep
+#   convection, the usual sign of a strong storm. Convention, not measured here.
+STORM_LEGEND = [
+    ((60, 170, 200), "Nubes sin lluvia"),
+    ((0, 212, 19), "Nubes espesas"),
+    ((255, 230, 0), "Chubascos posibles"),
+    ((255, 102, 0), "Tormenta débil"),
+    ((179, 0, 0), "Tormenta"),
+    ((178, 51, 157), "Tormenta fuerte"),
 ]
 
 
-def _draw_ir_legend(frame: Any) -> None:
-    """Draw a small qualitative legend for the infrared color palette.
+# How many pixels a storm's gray core is grown beyond what decode_infrared
+# finds within 2 px of its red rim, so a wide core is painted whole. The rim
+# (-62..-70 °C) is not gray, which keeps it from spreading into warm clouds.
+_STORM_CORE_GROWTH = 8
 
-    GIBS' Band13 Clean Infrared tiles come pre-colored (not raw grayscale
-    temperature data this code controls), and NASA doesn't publish the
-    exact color-to-Kelvin breakpoints for this specific rendering — so
-    this is a qualitative "what the colors mean" key (colder cloud tops
-    read as more severe), not a precise numeric scale like a Kelvin bar
-    would imply. Good enough to make the palette legible without
-    overstating precision this code can't verify.
+
+def paint_storm_cores(raster: Any) -> Any:
+    """`raster` (GIBS Band13) with its gray storm cores painted like the colder purples.
+
+    GIBS draws -71..-80 °C in grays, like warm clouds: the core of a strong
+    storm looked like no cloud at all. Painted in STORM_LEGEND's "Tormenta
+    fuerte" color, it matches the legend.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from .nowcast import IR_GRAY_CORE_COLDNESS, decode_infrared
+
+    core = decode_infrared(raster) == IR_GRAY_CORE_COLDNESS
+    if not core.any():
+        return raster
+    pixels = np.array(raster.convert("RGBA"))
+    rgb = pixels[..., :3].astype(np.int32)
+    gray = (np.abs(rgb[..., 0] - rgb[..., 1]) < 8) & (np.abs(rgb[..., 1] - rgb[..., 2]) < 8) & (pixels[..., 3] > 0)
+    for _ in range(_STORM_CORE_GROWTH):
+        grown = core.copy()
+        grown[1:] |= core[:-1]
+        grown[:-1] |= core[1:]
+        grown[:, 1:] |= core[:, :-1]
+        grown[:, :-1] |= core[:, 1:]
+        grown &= gray
+        if (grown == core).all():
+            break
+        core = grown
+    pixels[core, :3] = STORM_LEGEND[-1][0]
+    return Image.fromarray(pixels, "RGBA")
+
+
+def draw_storm_legend(frame: Any, top: int = 0) -> None:
+    """The STORM_LEGEND key in the top-right corner, `top` px down.
+
+    GIBS' Band13 tiles come pre-colored; their colors are mapped back to
+    temperatures with the published colormap (nowcast._IR_PALETTE), so each
+    row is a real range of that palette.
     """
     from PIL import ImageDraw
 
     draw = ImageDraw.Draw(frame, "RGBA")
     scale = _overlay_scale(frame)
 
-    font_size = round(_scaled(13, scale, 14, 26))
+    font_size = round(_scaled(13, scale, 13, 26))
     font = _load_font(font_size)
-    swatch = round(_scaled(14, scale, 15, 30))
-    gap = round(_scaled(8, scale, 8, 16))
-    padding = round(_scaled(10, scale, 10, 20))
-    row_height = swatch + round(_scaled(6, scale, 6, 12))
+    swatch = round(_scaled(14, scale, 13, 30))
+    gap = round(_scaled(8, scale, 7, 16))
+    padding = round(_scaled(10, scale, 8, 20))
+    row_height = swatch + round(_scaled(6, scale, 5, 12))
 
-    label_widths = [draw.textlength(label, font=font) for _, label in _IR_LEGEND_STEPS]
+    label_widths = [draw.textlength(label, font=font) for _, label in STORM_LEGEND]
     box_width = swatch + gap + max(label_widths) + 2 * padding
-    box_height = len(_IR_LEGEND_STEPS) * row_height + padding
+    box_height = len(STORM_LEGEND) * row_height + padding
 
-    x0, y0 = frame.width - box_width, 0
+    x0, y0 = frame.width - box_width, top
     draw.rectangle([(x0, y0), (frame.width, y0 + box_height)], fill=(0, 0, 0, 165))
-    for i, (color, label) in enumerate(_IR_LEGEND_STEPS):
+    for i, (color, label) in enumerate(STORM_LEGEND):
         row_y = y0 + padding // 2 + i * row_height
         draw.rectangle(
             [(x0 + padding, row_y), (x0 + padding + swatch, row_y + swatch)],
-            fill=color,
+            fill=(*color, 235),
             outline=(255, 255, 255, 90),
         )
         draw.text(
@@ -597,6 +643,8 @@ def _render_region_frame(
     """Resample `raster` to the output size, then draw every overlay on top."""
     from PIL import Image
 
+    if view.layer == GIBS_LAYER_INFRARED:
+        raster = paint_storm_cores(raster)
     raster = _smooth_if_infrared(raster, view.layer)
     if view.layer != GIBS_LAYER_INFRARED and view.scale > 1.5:
         # A large upscale of GeoColor shows pixel stair-steps; a very light
@@ -638,7 +686,7 @@ def _render_region_frame(
             scale=_REGION_UI_SCALE,
         )
     if view.layer == GIBS_LAYER_INFRARED:
-        _draw_ir_legend(frame)
+        draw_storm_legend(frame)
     _draw_caption(frame, caption, frame_index=frame_index, total_frames=total_frames)
     return frame.convert("RGB")
 
@@ -734,7 +782,7 @@ def cold_cloud_tops_layer(raster: Any, size: int) -> Any | None:
     """
     from PIL import Image, ImageFilter
 
-    blurred = raster.convert("RGB").filter(
+    blurred = paint_storm_cores(raster).convert("RGB").filter(
         ImageFilter.GaussianBlur(radius=_COLD_TOPS_BLUR_RADIUS * raster.width / size)
     )
     span = _COLD_TOPS_FULL_SATURATION - _COLD_TOPS_MIN_SATURATION

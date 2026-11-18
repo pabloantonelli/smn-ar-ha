@@ -401,42 +401,6 @@ def _draw_forecast_panel(
     return banner_height
 
 
-# Sampled from GIBS' Band13 palette, coldest last (see satellite.py).
-_CLOUD_TOPS_LEGEND_COLORS = [(60, 210, 90), (235, 220, 40), (235, 50, 40)]
-
-
-def _draw_cloud_tops_legend(frame: Any, top: int) -> None:
-    """Small key in the top-right corner, just under the forecast banner.
-
-    The cold cloud tops layer is satellite data, not precipitation: without
-    a label it would read as more radar.
-    """
-    from PIL import ImageDraw, ImageFont
-
-    try:
-        font = ImageFont.truetype(_FONT_PATH, size=15)
-    except OSError:
-        font = ImageFont.load_default()
-
-    label = "Nubes de tormenta (satélite)"
-    draw = ImageDraw.Draw(frame, "RGBA")
-    padding, swatch, gap = 8, 14, 8
-    text_width = draw.textlength(label, font=font)
-    box_width = len(_CLOUD_TOPS_LEGEND_COLORS) * swatch + gap + text_width + 2 * padding
-    box_height = swatch + 2 * padding
-    x0, y0 = frame.width - box_width, top
-    draw.rectangle([(x0, y0), (frame.width, y0 + box_height)], fill=(0, 0, 0, 170))
-    for i, color in enumerate(_CLOUD_TOPS_LEGEND_COLORS):
-        sx = x0 + padding + i * swatch
-        draw.rectangle([(sx, y0 + padding), (sx + swatch, y0 + padding + swatch)], fill=color)
-    draw.text(
-        (x0 + padding + len(_CLOUD_TOPS_LEGEND_COLORS) * swatch + gap, y0 + padding - 2),
-        label,
-        font=font,
-        fill=(255, 255, 255, 255),
-    )
-
-
 async def _fetch_frame_paths(
     session: aiohttp.ClientSession,
 ) -> tuple[str, list[tuple[datetime, str]]]:
@@ -606,6 +570,7 @@ def render_radar_frames(
         _draw_caption,
         _format_frame_caption,
         cold_cloud_tops_layer,
+        draw_storm_legend,
     )
 
     center_x, center_y = layers.center_x, layers.center_y
@@ -623,7 +588,6 @@ def render_radar_frames(
         if raster is not None and id(raster) not in processed:
             processed[id(raster)] = cold_cloud_tops_layer(raster, size)
         cloud_layers.append(processed.get(id(raster)) if raster is not None else None)
-    has_cloud_tops = any(layer is not None for layer in cloud_layers)
 
     # Always the national outline here, not the province's: this camera is
     # zoomed in tight around one lat/lon (a fixed ~area, no zoom control),
@@ -651,8 +615,8 @@ def render_radar_frames(
             _draw_alert_caption(frame, visible_alerts, bottom=timeline_height)
         _draw_location_pin(frame, latitude, longitude, center_x, center_y)
         panel_height = _draw_forecast_panel(frame, current_weather, hourly_forecast)
-        if has_cloud_tops:
-            _draw_cloud_tops_legend(frame, panel_height)
+        # Always there, even without cold tops: then the map has none of its colors.
+        draw_storm_legend(frame, panel_height)
         _draw_caption(
             frame, _format_frame_caption(frame_data.when), frame_index=i, total_frames=total
         )

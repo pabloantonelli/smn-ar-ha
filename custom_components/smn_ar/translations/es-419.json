@@ -140,10 +140,44 @@
         "name": "Dirección del viento"
       },
       "today_forecast": {
-        "name": "Hoy"
+        "name": "Hoy",
+        "state": {
+          "clear-night": "Despejado",
+          "cloudy": "Nublado",
+          "exceptional": "Excepcional",
+          "fog": "Niebla",
+          "hail": "Granizo",
+          "lightning": "Tormenta eléctrica",
+          "lightning-rainy": "Tormenta",
+          "partlycloudy": "Parcialmente nublado",
+          "pouring": "Lluvias fuertes",
+          "rainy": "Lluvia",
+          "snowy": "Nieve",
+          "snowy-rainy": "Lluvia y nieve",
+          "sunny": "Despejado",
+          "windy": "Ventoso",
+          "windy-variant": "Ventoso y nublado"
+        }
       },
       "tomorrow_forecast": {
-        "name": "Mañana"
+        "name": "Mañana",
+        "state": {
+          "clear-night": "Despejado",
+          "cloudy": "Nublado",
+          "exceptional": "Excepcional",
+          "fog": "Niebla",
+          "hail": "Granizo",
+          "lightning": "Tormenta eléctrica",
+          "lightning-rainy": "Tormenta",
+          "partlycloudy": "Parcialmente nublado",
+          "pouring": "Lluvias fuertes",
+          "rainy": "Lluvia",
+          "snowy": "Nieve",
+          "snowy-rainy": "Lluvia y nieve",
+          "sunny": "Despejado",
+          "windy": "Ventoso",
+          "windy-variant": "Ventoso y nublado"
+        }
       },
       "next_rain": {
         "name": "Próxima lluvia o tormenta"

@@ -140,10 +140,44 @@
         "name": "Wind direction"
       },
       "today_forecast": {
-        "name": "Today"
+        "name": "Today",
+        "state": {
+          "clear-night": "Clear",
+          "cloudy": "Cloudy",
+          "exceptional": "Exceptional",
+          "fog": "Fog",
+          "hail": "Hail",
+          "lightning": "Lightning",
+          "lightning-rainy": "Thunderstorm",
+          "partlycloudy": "Partly cloudy",
+          "pouring": "Pouring",
+          "rainy": "Rainy",
+          "snowy": "Snowy",
+          "snowy-rainy": "Snowy and rainy",
+          "sunny": "Sunny",
+          "windy": "Windy",
+          "windy-variant": "Windy and cloudy"
+        }
       },
       "tomorrow_forecast": {
-        "name": "Tomorrow"
+        "name": "Tomorrow",
+        "state": {
+          "clear-night": "Clear",
+          "cloudy": "Cloudy",
+          "exceptional": "Exceptional",
+          "fog": "Fog",
+          "hail": "Hail",
+          "lightning": "Lightning",
+          "lightning-rainy": "Thunderstorm",
+          "partlycloudy": "Partly cloudy",
+          "pouring": "Pouring",
+          "rainy": "Rainy",
+          "snowy": "Snowy",
+          "snowy-rainy": "Snowy and rainy",
+          "sunny": "Sunny",
+          "windy": "Windy",
+          "windy-variant": "Windy and cloudy"
+        }
       },
       "next_rain": {
         "name": "Next rain or storm"

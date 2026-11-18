@@ -55,7 +55,7 @@ aviso de tormenta cerca.
 | Próxima lluvia o tormenta | Cuándo es la próxima lluvia o tormenta ([cómo se calcula](#próxima-lluvia-o-tormenta)) |
 | Chance de tormenta en 3 h | La chance de tormenta en las próximas 3 horas, y en `proximas_horas` la de cada 3 horas del día siguiente ([cómo se calcula](#chance-de-tormenta-en-3-h)) |
 | Chance de lluvia mañana | La chance de que llueva mañana, y en `dias` la de mañana, pasado y el día siguiente, cada una con la del SMN al lado ([cómo se calcula](#chance-de-lluvia-mañana)) |
-| Resumen | Una frase que resume alertas, avisos y el pronóstico de hoy, lista para notificaciones o para leerla en voz alta |
+| Resumen | El pronóstico contado en palabras ([cómo se arma](#resumen)). El estado es un titular ("Esta tarde con posibles tormentas · 18 a 26 °C") o el aviso o alerta vigente; `pronostico` tiene el texto completo, listo para una tarjeta, una notificación o leerlo en voz alta |
 
 ### Avisos cercanos
 
@@ -88,6 +88,24 @@ departamentos): se encienden durante la **franja del día** con alerta
 | Avisos | Mapa del país con los polígonos de todos los avisos vigentes y tu ubicación |
 | Satélite / Satélite provincia | Animación satelital de los últimos ~100 min en color real. De noche pasa sola a una vista nocturna |
 | … infrarrojo | Igual, mostrando la temperatura de los topes de nube. Sirve para ver la intensidad de una tormenta |
+
+El Radar y los satélites infrarrojos llevan siempre la misma leyenda. Cuanto
+más fría está la parte de arriba de una nube, más alta y fuerte es la tormenta:
+
+| Color | Tope de la nube | Qué significa |
+|---|---|---|
+| Celeste a azul | −20 a −30 °C | Nubes sin lluvia |
+| Verde | −31 a −45 °C | Nubes espesas |
+| Amarillo | −46 a −57 °C | Chubascos posibles: a −52 °C llovió menos de la mitad de las veces |
+| Naranja | −58 a −61 °C | Tormenta débil: desde −58 °C llovió el 77–87% de las veces |
+| Rojo | −62 a −70 °C | Tormenta |
+| Violeta | −71 °C o menos | Tormenta fuerte |
+
+Los porcentajes salen de comparar con los aeropuertos. Que desde −71 °C sea
+una tormenta fuerte es la convención meteorológica, no algo medido acá. La
+paleta de NASA dibuja en gris lo que está entre −71 y −80 °C, igual que las
+nubes bajas: la integración pinta de violeta esos centros grises dentro del
+rojo, así que coinciden con la leyenda.
 
 ### Actualización
 
@@ -215,8 +233,12 @@ Atributos principales:
 - **`probabilidad_smn`**: el máximo del rango que da el SMN para la franja,
   tal cual, sin calibrar: no es la chance de que llueva.
 - **`tipo`**: `lluvia` o `tormenta`.
-- **`probabilidad_tormenta`**: para el pronóstico horario, la probabilidad de
-  tormenta en las 3 horas desde el inicio.
+- **`probabilidad_tormenta`**: la [chance de tormenta](#chance-de-tormenta-en-3-h)
+  que dan los modelos en las 3 horas desde el inicio. Cuando la "tormenta"
+  viene del pronóstico o de una alerta del SMN, el `detalle` la muestra al lado
+  ("según el SMN · chance de tormenta 4% en 3 h"): el SMN anuncia tormenta
+  para toda una franja de 6 horas, y este número dice qué tan probable la ven
+  los modelos en esas horas.
 - **`fuente`**: `radar SINARAME <radar>`, `radar`, `satélite infrarrojo`,
   `aviso cercano`, `alerta de zona`, `pronóstico horario` o `pronóstico`.
 - **`minutos`**: cuánto falta.
@@ -239,6 +261,29 @@ color: "{{ state_attr(entity, 'color') }}"
 primary: "{{ state_attr(entity, 'titulo') }}"
 secondary: "{{ state_attr(entity, 'detalle') }}"
 ```
+
+## Resumen
+
+Cuenta el pronóstico por franjas del día (madrugada, mañana, tarde y noche) y
+cambia según la hora:
+
+- **Hasta las 18**: lo que queda de hoy, franja por franja, y una línea para
+  mañana.
+- **Desde las 18**: esta noche y mañana franja por franja.
+
+Cada franja dice cómo está el cielo, la máxima o la mínima, si puede llover y
+desde qué hora, y si hay chance de tormenta. El viento aparece sólo si es
+fuerte, y la sensación térmica sólo si se aleja de la temperatura. Las
+chances son las mismas que las de "Próxima lluvia o tormenta" y "Chance de
+tormenta en 3 h", y las temperaturas salen todas del pronóstico por hora, así
+el texto no se contradice. Cuando el SMN anuncia tormentas que no se ven
+probables, lo dice. Si hay un aviso o una alerta, va primero.
+
+Por ejemplo: "Esta tarde, nublada, con máxima de 23 °C a las 18. Baja chance
+de lluvia (32 %); el SMN anuncia tormentas, aunque por ahora se ven poco
+probables (5 %). A la noche, parcialmente nublada, con mínima de 18 °C.
+Mañana jueves: lluvia casi segura (97 %), de 16 a 22 °C, con más chance de
+tormenta entre las 15 y las 18 (26 %)."
 
 ## Chance de tormenta en 3 h
 

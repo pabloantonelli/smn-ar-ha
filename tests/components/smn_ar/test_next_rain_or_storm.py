@@ -368,7 +368,8 @@ def test_message_for_a_forecast() -> None:
     next_any, next_storm = _find_cordoba()
     assert next_rain_message(next_any, next_storm, NOW_CORDOBA) == {
         "titulo": "Tormenta posible desde las 14:00",
-        "detalle": "25% antes de las 15:00 · 57% antes de las 18:00 · alerta amarilla",
+        # The zone alert says storm; the models give it this chance.
+        "detalle": "25% antes de las 15:00 · 57% antes de las 18:00 · alerta amarilla · chance de tormenta 2% en 3 h",
         "icono": "mdi:weather-cloudy-clock",
         "color": "orange",
     }
@@ -389,10 +390,11 @@ def test_message_never_says_a_forecast_is_under_way() -> None:
 def test_message_for_an_aviso_inside() -> None:
     next_any = {
         "when": NOW - timedelta(minutes=10), "tipo": "tormenta", "source": (4, "aviso cercano"), "distance_km": 0,
+        "storm_odds": 3,
     }
     message = next_rain_message(next_any, next_any, NOW)
     assert message["titulo"] == "Aviso de tormenta vigente"
-    assert message["detalle"] == "según aviso cercano"
+    assert message["detalle"] == "según aviso cercano"  # seen, not forecast: no chance shown
     assert message["color"] == "red"
 
 
@@ -460,3 +462,23 @@ async def test_storm_and_rain_tomorrow_entities(hass, enable_custom_integrations
         "fecha": "2026-10-08", "probabilidad": int(rain.state), "mm": 6.0, "probabilidad_smn": 70,
     }
     assert rain.attributes["dias"][1]["probabilidad_smn"] is None
+
+
+def test_smn_storm_shows_the_models_storm_chance() -> None:
+    """SMN says storm for the afternoon; the models hardly see one."""
+    hours = [_calm(h) for h in range(8, 12)] + [_stormy(h, 40, 0.5, cape=100, aifs=0.1, ukmo=0.0) for h in range(12, 18)]
+    next_any, next_storm = _find_with([_period("12:00", 76, [10, 20])], open_meteo_hourly=hours)
+    assert next_any["tipo"] == "tormenta"
+    assert next_any["source"][1] == "pronóstico"
+    assert next_any["when"] == datetime(2026, 10, 7, 12, 0, tzinfo=ARG)
+    odds = next_any["storm_odds"]
+    assert odds is not None and odds < 25
+    detalle = next_rain_message(next_any, next_storm, NOW)["detalle"]
+    assert detalle.endswith(f"según el SMN · chance de tormenta {odds}% en 3 h")
+
+
+def test_summary_says_the_condition_in_spanish() -> None:
+    from custom_components.smn_ar.sensor import build_summary
+
+    state, _ = build_summary([], {}, {}, {}, [{"weather": {"id": 76}, "temp_max": 26, "temp_min": 19}])
+    assert state == "Sin alertas vigentes. Hoy: tormenta, máxima 26°C / mínima 19°C"

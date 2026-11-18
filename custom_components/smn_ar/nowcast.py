@@ -125,7 +125,7 @@ _IR_PALETTE = [
 IR_RAIN_COLDNESS = 58
 IR_STORM_COLDNESS = 62
 _IR_WEAK_COLDNESS = 40
-_IR_GRAY_CORE_COLDNESS = 75
+IR_GRAY_CORE_COLDNESS = 75
 _IR_CORE_NEIGHBOR_COLDNESS = 65
 
 SOURCE_RADAR = "radar"
@@ -257,7 +257,7 @@ def decode_infrared(image: Any) -> Any:
     for dy in range(-2, 3):
         for dx in range(-2, 3):
             near_very_cold |= np.roll(np.roll(very_cold, dy, axis=0), dx, axis=1)
-    coldness[gray & near_very_cold] = _IR_GRAY_CORE_COLDNESS
+    coldness[gray & near_very_cold] = IR_GRAY_CORE_COLDNESS
     coldness[pixels[..., 3] == 0] = 0
     return coldness
 
