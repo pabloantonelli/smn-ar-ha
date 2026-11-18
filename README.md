@@ -1,7 +1,8 @@
 # SMN Argentina para Home Assistant
 
-El clima oficial del [Servicio Meteorológico Nacional](https://www.smn.gob.ar)
-en Home Assistant:
+El clima de Argentina en Home Assistant, con el **Servicio Meteorológico
+Nacional** como base y otras fuentes para lo que el SMN no da: el pronóstico
+hora por hora, el radar, el satélite y la chance de tormenta.
 
 - Clima actual y pronóstico de 7 días del SMN.
 - Avisos que se encienden sólo si la tormenta está **cerca de tu casa**, y
@@ -9,6 +10,18 @@ en Home Assistant:
 - Cuándo llega la próxima lluvia, la chance de tormenta y de lluvia mañana,
   y el pronóstico contado en palabras.
 - Radar y satélite animados, con una leyenda de tormentas.
+
+| Fuente | Qué aporta |
+|---|---|
+| [SMN](https://www.smn.gob.ar) | Clima actual, pronóstico diario y por franjas, alertas de zona y avisos a muy corto plazo |
+| [Open-Meteo](https://open-meteo.com) | Pronóstico hora por hora, y los modelos ECMWF AIFS y UK Met Office para la chance de tormenta y de lluvia mañana |
+| SINARAME y RainViewer | Radar, para ver la lluvia que se acerca |
+| NASA GIBS (GOES-East) | Satélite visible e infrarrojo, para ver las tormentas donde no hay radar |
+| OpenStreetMap | Los mapas de fondo |
+
+Las chances no son las que dan las fuentes tal cual: se calibraron contra un
+año de observaciones de aeropuertos argentinos, así que dicen cuántas veces
+llovió o hubo tormenta de verdad en situaciones parecidas.
 
 ## Instalación
 
@@ -157,10 +170,8 @@ Las alertas de la zona disparan `smn_ar_alert_created`, `smn_ar_alert_updated`
 
 ## Cómo se calcula
 
-Los números se compararon contra un año de observaciones de aeropuertos
-argentinos (METAR), así que dicen cuántas veces pasó de verdad en
-situaciones parecidas. Todas las entidades tienen un atributo `criterio` que
-lo explica en una frase.
+Todas las entidades tienen un atributo `criterio` que explica en una frase de
+dónde sale lo que muestran.
 
 - **Próxima lluvia o tormenta**: lo más próximo entre el radar o el satélite
   (hasta 2 horas, al minuto), un aviso cercano que se mueve hacia tu casa,
@@ -271,9 +282,9 @@ mañana" y del SMN para compararlos.
   (`addons/smn_proxy`) lo hace con Chromium headless y expone la API en un
   puerto local ([README](addons/smn_proxy/README.md)). La integración sólo
   habla con ese proxy.
-- **Otras fuentes**, que no pasan por el proxy: radar de RainViewer y del
-  SINARAME, satélite de NASA GIBS (GOES-East), pronóstico de Open-Meteo y
-  mapas de OpenStreetMap.
+- **Las demás fuentes** (Open-Meteo, SINARAME, RainViewer, NASA GIBS,
+  OpenStreetMap) se consultan directo, sin pasar por el proxy. Todas son
+  gratuitas y no necesitan clave.
 
 ## Créditos
 
