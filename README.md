@@ -215,8 +215,12 @@ Atributos principales:
 - **`probabilidad_smn`**: el máximo del rango que da el SMN para la franja,
   tal cual, sin calibrar: no es la chance de que llueva.
 - **`tipo`**: `lluvia` o `tormenta`.
-- **`probabilidad_tormenta`**: para el pronóstico horario, la probabilidad de
-  tormenta en las 3 horas desde el inicio.
+- **`probabilidad_tormenta`**: la [chance de tormenta](#chance-de-tormenta-en-3-h)
+  que dan los modelos en las 3 horas desde el inicio. Cuando la "tormenta"
+  viene del pronóstico o de una alerta del SMN, el `detalle` la muestra al lado
+  ("según el SMN · chance de tormenta 4% en 3 h"): el SMN anuncia tormenta
+  para toda una franja de 6 horas, y este número dice qué tan probable la ven
+  los modelos en esas horas.
 - **`fuente`**: `radar SINARAME <radar>`, `radar`, `satélite infrarrojo`,
   `aviso cercano`, `alerta de zona`, `pronóstico horario` o `pronóstico`.
 - **`minutos`**: cuánto falta.

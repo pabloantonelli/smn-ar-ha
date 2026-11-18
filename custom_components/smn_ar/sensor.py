@@ -42,6 +42,7 @@ from .const import (
     ALERT_EVENT_MAP,
     ALERT_EVENT_NEARBY_KEYWORDS,
     ALERT_LEVEL_MAP,
+    CONDITION_LABELS_ES,
     DOMAIN,
     DAILY_RAIN_CALIBRATION,
     HOURLY_RAIN_ODDS,
@@ -427,6 +428,11 @@ def find_next_rain_or_storm(
     candidates.sort(key=sort_key)
     current_hour = now.astimezone(_ARG_TZ).replace(minute=0, second=0, microsecond=0)
     for candidate in candidates:
+        if candidate.get("storm_odds") is None and open_meteo_hourly:
+            # The models' chance of a storm from when it starts, to set against
+            # a "tormenta" from SMN's forecast or zone alert.
+            start = max(candidate["when"], now).astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            candidate["storm_odds"] = storm_odds(open_meteo_hourly, start)
         if candidate["source"][0] < _SOURCE_AVISO[0]:
             when_hour = candidate["when"].astimezone(_ARG_TZ).replace(minute=0, second=0, microsecond=0)
             curve = rain_curve(open_meteo_hourly, max(current_hour, when_hour - _CURVE_LEAD))
@@ -502,7 +508,10 @@ def next_rain_message(
             place += f" al {_DIRECTIONS_ES[next_any['direction']]}"
         parts.append(place)
     if not next_any.get("level_name"):
-        parts.append(f"según {next_any['source'][1]}")
+        source = next_any["source"]
+        parts.append("según el SMN" if source == _SOURCE_FORECAST else f"según {source[1]}")
+    if tipo == "tormenta" and not observed and next_any.get("storm_odds") is not None:
+        parts.append(f"chance de tormenta {next_any['storm_odds']}% en 3 h")
     if next_storm is not None and next_storm is not next_any:
         parts.append(f"tormenta posible desde {_day_and_time(next_storm['when'], now)}")
 
@@ -608,6 +617,7 @@ def build_summary(
     if daily_forecast:
         today = daily_forecast[0]
         condition = format_condition(today.get("weather"))
+        condition = CONDITION_LABELS_ES.get(condition, condition).lower()
         temp_max = today.get("temp_max")
         temp_min = today.get("temp_min")
         state = "Sin alertas vigentes."
@@ -809,6 +819,12 @@ class SMNWindBearingSensor(_SMNSensorBase):
         return {"degrees": degrees} if degrees is not None else {}
 
 
+DAILY_CONDITIONS = [
+    "clear-night", "cloudy", "exceptional", "fog", "hail", "lightning", "lightning-rainy", "partlycloudy",
+    "pouring", "rainy", "snowy", "snowy-rainy", "sunny", "windy", "windy-variant",
+]
+
+
 class _SMNDailyForecastSensor(_SMNSensorBase):
     """Shared logic for a single day's forecast (today or tomorrow) as a sensor.
 
@@ -820,6 +836,9 @@ class _SMNDailyForecastSensor(_SMNSensorBase):
     _device_group = devices.FORECAST
 
     _day_index: int
+    # The state stays HA's condition ("lightning-rainy"), shown translated.
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = DAILY_CONDITIONS
 
     @property
     def _day(self) -> dict[str, Any] | None:
