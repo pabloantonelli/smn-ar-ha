@@ -89,6 +89,24 @@ departamentos): se encienden durante la **franja del día** con alerta
 | Satélite / Satélite provincia | Animación satelital de los últimos ~100 min en color real. De noche pasa sola a una vista nocturna |
 | … infrarrojo | Igual, mostrando la temperatura de los topes de nube. Sirve para ver la intensidad de una tormenta |
 
+El Radar y los satélites infrarrojos llevan siempre la misma leyenda. Cuanto
+más fría está la parte de arriba de una nube, más alta y fuerte es la tormenta:
+
+| Color | Tope de la nube | Qué significa |
+|---|---|---|
+| Celeste a azul | −20 a −30 °C | Nubes sin lluvia |
+| Verde | −31 a −45 °C | Nubes espesas |
+| Amarillo | −46 a −57 °C | Chubascos posibles: a −52 °C llovió menos de la mitad de las veces |
+| Naranja | −58 a −61 °C | Tormenta débil: desde −58 °C llovió el 77–87% de las veces |
+| Rojo | −62 a −70 °C | Tormenta |
+| Violeta | −71 °C o menos | Tormenta fuerte |
+
+Los porcentajes salen de comparar con los aeropuertos. Que desde −71 °C sea
+una tormenta fuerte es la convención meteorológica, no algo medido acá. En los
+satélites infrarrojos, el gris son nubes bajas o el suelo, pero un centro
+gris rodeado de rojo oscuro también es una tormenta fuerte: la paleta usa
+grises entre −71 y −80 °C.
+
 ### Actualización
 
 - **Avisos a corto plazo**: cada 10 min.
