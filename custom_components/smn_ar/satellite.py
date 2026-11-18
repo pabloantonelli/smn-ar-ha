@@ -345,6 +345,44 @@ STORM_LEGEND = [
 ]
 
 
+# How many pixels a storm's gray core is grown beyond what decode_infrared
+# finds within 2 px of its red rim, so a wide core is painted whole. The rim
+# (-62..-70 °C) is not gray, which keeps it from spreading into warm clouds.
+_STORM_CORE_GROWTH = 8
+
+
+def paint_storm_cores(raster: Any) -> Any:
+    """`raster` (GIBS Band13) with its gray storm cores painted like the colder purples.
+
+    GIBS draws -71..-80 °C in grays, like warm clouds: the core of a strong
+    storm looked like no cloud at all. Painted in STORM_LEGEND's "Tormenta
+    fuerte" color, it matches the legend.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from .nowcast import IR_GRAY_CORE_COLDNESS, decode_infrared
+
+    core = decode_infrared(raster) == IR_GRAY_CORE_COLDNESS
+    if not core.any():
+        return raster
+    pixels = np.array(raster.convert("RGBA"))
+    rgb = pixels[..., :3].astype(np.int32)
+    gray = (np.abs(rgb[..., 0] - rgb[..., 1]) < 8) & (np.abs(rgb[..., 1] - rgb[..., 2]) < 8) & (pixels[..., 3] > 0)
+    for _ in range(_STORM_CORE_GROWTH):
+        grown = core.copy()
+        grown[1:] |= core[:-1]
+        grown[:-1] |= core[1:]
+        grown[:, 1:] |= core[:, :-1]
+        grown[:, :-1] |= core[:, 1:]
+        grown &= gray
+        if (grown == core).all():
+            break
+        core = grown
+    pixels[core, :3] = STORM_LEGEND[-1][0]
+    return Image.fromarray(pixels, "RGBA")
+
+
 def draw_storm_legend(frame: Any, top: int = 0) -> None:
     """The STORM_LEGEND key in the top-right corner, `top` px down.
 
@@ -605,6 +643,8 @@ def _render_region_frame(
     """Resample `raster` to the output size, then draw every overlay on top."""
     from PIL import Image
 
+    if view.layer == GIBS_LAYER_INFRARED:
+        raster = paint_storm_cores(raster)
     raster = _smooth_if_infrared(raster, view.layer)
     if view.layer != GIBS_LAYER_INFRARED and view.scale > 1.5:
         # A large upscale of GeoColor shows pixel stair-steps; a very light
@@ -742,7 +782,7 @@ def cold_cloud_tops_layer(raster: Any, size: int) -> Any | None:
     """
     from PIL import Image, ImageFilter
 
-    blurred = raster.convert("RGB").filter(
+    blurred = paint_storm_cores(raster).convert("RGB").filter(
         ImageFilter.GaussianBlur(radius=_COLD_TOPS_BLUR_RADIUS * raster.width / size)
     )
     span = _COLD_TOPS_FULL_SATURATION - _COLD_TOPS_MIN_SATURATION

@@ -102,10 +102,10 @@ más fría está la parte de arriba de una nube, más alta y fuerte es la tormen
 | Violeta | −71 °C o menos | Tormenta fuerte |
 
 Los porcentajes salen de comparar con los aeropuertos. Que desde −71 °C sea
-una tormenta fuerte es la convención meteorológica, no algo medido acá. En los
-satélites infrarrojos, el gris son nubes bajas o el suelo, pero un centro
-gris rodeado de rojo oscuro también es una tormenta fuerte: la paleta usa
-grises entre −71 y −80 °C.
+una tormenta fuerte es la convención meteorológica, no algo medido acá. La
+paleta de NASA dibuja en gris lo que está entre −71 y −80 °C, igual que las
+nubes bajas: la integración pinta de violeta esos centros grises dentro del
+rojo, así que coinciden con la leyenda.
 
 ### Actualización
 
