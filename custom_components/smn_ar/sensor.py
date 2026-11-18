@@ -64,6 +64,7 @@ from .const import (
 from . import devices
 from .devices import device_info
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
+from .narrative import build_forecast
 from .nowcast import SOURCE_RADAR, SOURCE_SATELLITE, Nowcast, aviso_arrival, steering_motion
 from .weather import format_condition
 
@@ -1144,29 +1145,44 @@ class SMNShortTermSummarySensor(
     def device_info(self) -> DeviceInfo:
         return device_info(self.hass, self._config_entry, self._device_group)
 
-    @property
-    def native_value(self) -> str:
+    def _summary(self) -> tuple[str, dict[str, Any]]:
+        """See build_summary; without an alert or aviso, the state is the forecast's headline.
+
+        `pronostico` always has the forecast told in full (narrative.py),
+        after the alert or aviso when there is one.
+        """
         data = self.coordinator.data
-        state, _ = build_summary(
+        state, attrs = build_summary(
             data.shortterm_alerts,
             data.alerts,
             data.heat_warnings,
             data.cold_warnings,
             data.daily_forecast,
         )
-        return state
+        now = datetime.now(_ARG_TZ)
+        forecast = build_forecast(
+            now,
+            data.open_meteo_hourly,
+            data.hourly_forecast,
+            data.daily_forecast,
+            daily_rain_odds(data.open_meteo_models, now),
+        )
+        if forecast is None:
+            attrs["pronostico"] = state
+            return state, attrs
+        headline, text = forecast
+        alerting = not state.startswith("Sin alertas vigentes")
+        attrs["titular"] = headline
+        attrs["pronostico"] = f"{state.rstrip('.')}. {text}" if alerting else text
+        return (state if alerting else headline)[:MAX_STATE_LENGTH], attrs
+
+    @property
+    def native_value(self) -> str:
+        return self._summary()[0]
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        data = self.coordinator.data
-        _, attrs = build_summary(
-            data.shortterm_alerts,
-            data.alerts,
-            data.heat_warnings,
-            data.cold_warnings,
-            data.daily_forecast,
-        )
-        return attrs
+        return self._summary()[1]
 
 
 class SMNNationwideAvisosSensor(
