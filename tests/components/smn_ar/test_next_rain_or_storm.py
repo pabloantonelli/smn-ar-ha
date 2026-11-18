@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from custom_components.smn_ar.sensor import find_next_rain_or_storm, next_rain_message, rain_curve
+from custom_components.smn_ar.sensor import (
+    daily_rain_odds,
+    find_next_rain_or_storm,
+    next_rain_message,
+    rain_curve,
+    storm_odds,
+)
 
 ARG = timezone(timedelta(hours=-3))
 NOW = datetime(2026, 10, 7, 8, 0, tzinfo=ARG)  # morning period
@@ -181,7 +187,73 @@ def test_hourly_forecast_alone() -> None:
     assert next_any["when"] == datetime(2026, 10, 7, 10, 0, tzinfo=ARG)
     assert [pct for _, pct in next_any["curve"]] == [10, 27, 34]  # Open-Meteo's hours start at 9:00
     assert next_any["odds"] == 34
-    assert next_storm["when"] == datetime(2026, 10, 7, 11, 0, tzinfo=ARG)
+    # The weather code alone no longer makes a storm (see storm_odds).
+    assert next_storm is None
+
+
+def _stormy(hour: int, probability: int = 90, precipitation: float = 3.0, cape: float = 2000, aifs: float = 2.0, ukmo: float = 1.0) -> dict:
+    return {**_hour(hour, probability, precipitation), "cape": cape, "precipitation_aifs": aifs, "precipitation_ukmo": ukmo}
+
+
+def _calm(hour: int) -> dict:
+    return _stormy(hour, 5, 0.0, cape=50, aifs=0.0, ukmo=0.0)
+
+
+def test_storm_odds_from_the_models() -> None:
+    hours = [_calm(h) for h in range(8, 12)] + [_stormy(h) for h in range(12, 16)]
+    start = datetime(2026, 10, 7, 12, 0, tzinfo=ARG)
+    assert storm_odds(hours, start) >= 50
+    assert storm_odds(hours, datetime(2026, 10, 7, 8, 0, tzinfo=ARG)) <= 2
+    # Without the AIFS/UKMO rain it falls back to best_match alone, lower here.
+    no_models = [{**h, "precipitation_aifs": None} for h in hours]
+    assert 0 < storm_odds(no_models, start) < storm_odds(hours, start)
+    # Not all 3 hours there: unknown.
+    assert storm_odds(hours, datetime(2026, 10, 7, 14, 0, tzinfo=ARG)) is None
+
+
+def test_storm_starts_with_the_rain() -> None:
+    # 10:00 and 11:00 are dry, though the storm is within their 3 hours.
+    hours = [_calm(h) for h in range(8, 12)] + [_stormy(h) for h in range(12, 16)]
+    next_any, next_storm = _find_with(open_meteo_hourly=hours)
+    assert next_any is next_storm
+    assert next_any["tipo"] == "tormenta"
+    assert next_any["when"] == datetime(2026, 10, 7, 12, 0, tzinfo=ARG)
+    assert next_any["storm_odds"] >= 50
+
+
+def test_rain_without_storm_signal_stays_rain() -> None:
+    hours = [_calm(h) for h in range(8, 12)] + [_stormy(h, 70, 1.0, cape=0, aifs=0.2, ukmo=0.0) for h in range(12, 16)]
+    next_any, next_storm = _find_with(open_meteo_hourly=hours)
+    assert next_any["tipo"] == "lluvia"
+    assert next_any["storm_odds"] < 25
+    assert next_storm is None
+
+
+def test_curve_adds_the_models_rain() -> None:
+    start = datetime(2026, 10, 7, 10, 0, tzinfo=ARG)
+    plain = [_hour(h, 50, 0.5) for h in range(10, 16)]
+    wet = [{**h, "precipitation_aifs": 2.0, "precipitation_ukmo": 1.0} for h in plain]
+    dry = [{**h, "precipitation_aifs": 0.0, "precipitation_ukmo": 0.0} for h in plain]
+    wet_curve, dry_curve, plain_curve = (rain_curve(hours, start) for hours in (wet, dry, plain))
+    assert wet_curve[-1][1] > plain_curve[-1][1] > dry_curve[-1][1]
+    # Without the models, the curve is the one from before.
+    assert [pct for _, pct in plain_curve] == [pct for _, pct in rain_curve([_hour(h, 50, 0.5) for h in range(10, 16)], start)]
+
+
+def test_daily_rain_odds() -> None:
+    utc = timezone.utc
+    first = datetime(2026, 10, 7, 0, 0, tzinfo=utc)
+    hours = []
+    for index in range(5 * 24):
+        when = first + timedelta(hours=index)
+        day = (when - timedelta(hours=1)).astimezone(ARG).date().day
+        hours.append({"when": when, "precipitation_aifs": {8: 0.0, 9: 0.25}.get(day, 0.0), "precipitation_ukmo": 0.0})
+    days = daily_rain_odds(hours, NOW)
+    assert [d["fecha"] for d in days] == ["2026-10-08", "2026-10-09", "2026-10-10"]
+    assert days[0] == {"fecha": "2026-10-08", "probabilidad": 9, "mm": 0.0}
+    assert days[1]["mm"] == 6.0 and days[1]["probabilidad"] >= 85
+    # A day the models don't fully cover is left out.
+    assert len(daily_rain_odds(hours[:60], NOW)) == 1
 
 
 def test_nowcast_wins_with_its_details() -> None:
@@ -336,3 +408,55 @@ def test_message_for_an_approaching_echo_and_a_later_storm() -> None:
         "42% antes de las 10:00 · a 12 km al oeste · según radar SINARAME Córdoba"
         " · tormenta posible desde mañana a las 08:00"
     )
+
+
+async def test_storm_and_rain_tomorrow_entities(hass, enable_custom_integrations, freezer) -> None:
+    """Probabilidad de tormenta and Lluvia mañana, from the Open-Meteo hours."""
+    from unittest.mock import patch
+
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME, Platform
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.smn_ar.const import DOMAIN
+
+    freezer.move_to("2026-10-07 15:20:00+00:00")  # 12:20 in Argentina
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_LATITUDE: LAT, CONF_LONGITUDE: LON, CONF_NAME: "Casa"}, unique_id="4865"
+    )
+    entry.add_to_hass(hass)
+    utc = timezone.utc
+    first = datetime(2026, 10, 7, 0, 0, tzinfo=utc)
+    models = [
+        {"when": first + timedelta(hours=i), "precipitation_aifs": 0.25, "precipitation_ukmo": 0.0} for i in range(120)
+    ]
+
+    async def fake_fetch(self) -> None:
+        self.open_meteo_hourly = [
+            {**(_stormy(0) if 15 <= h < 18 else _calm(0)), "when": first + timedelta(hours=h)} for h in range(72)
+        ]
+        self.open_meteo_models = models
+        self.hourly_forecast = [_period("12:00", 73, [40, 70], date="2026-10-08")]
+
+    with patch("custom_components.smn_ar.coordinator.ArgentinaSMNData.fetch_data", fake_fetch), patch(
+        "custom_components.smn_ar.PLATFORMS", [Platform.SENSOR]
+    ), patch("homeassistant.loader.Integration.dependencies", []):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    storm = hass.states.get(registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_storm_odds"))
+    assert int(storm.state) >= 50  # 15-18 UTC is stormy
+    assert storm.attributes["unit_of_measurement"] == "%"
+    assert storm.attributes["fuente"] == "Open-Meteo: best_match, ECMWF AIFS y UK Met Office"
+    assert len(storm.attributes["proximas_horas"]) == 8
+    assert storm.attributes["proximas_horas"][0]["desde"] == "2026-10-07T12:00:00-03:00"
+    assert storm.attributes["maxima"] == int(storm.state)
+
+    rain = hass.states.get(registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_rain_tomorrow"))
+    assert int(rain.state) >= 85  # 6 mm all day
+    assert rain.attributes["dias"][0] == {
+        "fecha": "2026-10-08", "probabilidad": int(rain.state), "mm": 6.0, "probabilidad_smn": 70,
+    }
+    assert rain.attributes["dias"][1]["probabilidad_smn"] is None

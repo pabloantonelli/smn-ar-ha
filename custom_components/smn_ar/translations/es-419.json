@@ -147,6 +147,12 @@
       },
       "next_rain": {
         "name": "Próxima lluvia o tormenta"
+      },
+      "storm_odds": {
+        "name": "Probabilidad de tormenta"
+      },
+      "rain_tomorrow": {
+        "name": "Lluvia mañana"
       }
     }
   }

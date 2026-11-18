@@ -44,16 +44,21 @@ from .const import (
     ALERT_EVENT_NEARBY_KEYWORDS,
     ALERT_LEVEL_MAP,
     DOMAIN,
+    DAILY_RAIN_CALIBRATION,
     HOURLY_RAIN_ODDS,
+    NEXT_RAIN_CURVE_BLEND,
     NEXT_RAIN_HOURLY_MIN_PRECIPITATION,
     NEXT_RAIN_HOURLY_PROBABILITY,
-    NEXT_RAIN_HOURLY_STORM_PROBABILITY,
     NEXT_RAIN_CURVE_CALIBRATION,
     NEXT_RAIN_PROBABILITY_THRESHOLD,
     NEXT_RAIN_RADAR_ODDS,
     NEXT_RAIN_REFINE_MIN_PRECIPITATION,
     NEXT_RAIN_REFINE_PROBABILITY,
     NEXT_RAIN_SATELLITE_ODDS,
+    NEXT_RAIN_STORM_ODDS,
+    OPEN_METEO_MODELS,
+    STORM_ODDS_CALIBRATION,
+    STORM_ODDS_FALLBACK,
     wind_cardinal,
 )
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
@@ -123,14 +128,82 @@ def _period_start(when: datetime) -> datetime:
     return local.replace(hour=local.hour // 6 * 6, minute=0, second=0, microsecond=0)
 
 
-def _hourly_is_rain(hour: dict[str, Any]) -> str | None:
-    """Whether an Open-Meteo hour counts as "tormenta", "lluvia" or neither (None)."""
+def _hourly_is_rain(hour: dict[str, Any], storm: int | None = None) -> str | None:
+    """Whether an Open-Meteo hour counts as "tormenta", "lluvia" or neither (None).
+
+    `storm` is the chance of a storm in the 3 hours from it (storm_odds);
+    the hour itself must bring some rain too (NEXT_RAIN_REFINE_*), so the
+    storm starts when the rain does and not up to 2 hours before.
+    """
     probability = hour.get("probability") or 0
-    if (hour.get("weather_code") or 0) >= 95 and probability >= NEXT_RAIN_HOURLY_STORM_PROBABILITY:
+    precipitation = hour.get("precipitation") or 0
+    if (
+        storm is not None
+        and storm >= NEXT_RAIN_STORM_ODDS
+        and probability >= NEXT_RAIN_REFINE_PROBABILITY
+        and precipitation >= NEXT_RAIN_REFINE_MIN_PRECIPITATION
+    ):
         return "tormenta"
-    if probability >= NEXT_RAIN_HOURLY_PROBABILITY and (hour.get("precipitation") or 0) >= NEXT_RAIN_HOURLY_MIN_PRECIPITATION:
+    if probability >= NEXT_RAIN_HOURLY_PROBABILITY and precipitation >= NEXT_RAIN_HOURLY_MIN_PRECIPITATION:
         return "lluvia"
     return None
+
+
+def _has_models(hours: list[dict[str, Any]]) -> bool:
+    """Whether every hour has the AIFS and UKMO rain (OPEN_METEO_MODELS)."""
+    return all(hour.get(key) is not None for hour in hours for key in OPEN_METEO_MODELS)
+
+
+def _sigmoid_pct(logit: float) -> int:
+    return round(100 / (1 + math.exp(-logit)))
+
+
+def storm_odds(open_meteo_hourly: list[dict[str, Any]], start: datetime) -> int | None:
+    """% chance of a thunderstorm in the 3 hours from `start` (an Open-Meteo hour).
+
+    See STORM_ODDS_CALIBRATION; STORM_ODDS_FALLBACK when the AIFS/UKMO rain
+    is missing. None when Open-Meteo doesn't have all 3 hours.
+    """
+    by_hour = {hour["when"]: hour for hour in open_meteo_hourly}
+    hours = [by_hour.get(start + index * _HOUR) for index in range(3)]
+    if any(hour is None or hour.get("probability") is None for hour in hours):
+        return None
+    probability = max(hour["probability"] for hour in hours) / 100
+    cape = math.log1p(max(hour.get("cape") or 0 for hour in hours))
+    angle = 2 * math.pi * start.astimezone(timezone.utc).hour / 24
+    clock = (math.sin(angle), math.cos(angle))  # hour of day
+    if _has_models(hours):
+        c0, c1, c2, c3, c4, c5, c6 = STORM_ODDS_CALIBRATION
+        aifs = math.log1p(sum(hour["precipitation_aifs"] for hour in hours))
+        ukmo = math.log1p(sum(hour["precipitation_ukmo"] for hour in hours))
+        return _sigmoid_pct(c0 + c1 * probability + c2 * aifs + c3 * ukmo + c4 * cape + c5 * clock[0] + c6 * clock[1])
+    c0, c1, c4, c5, c6 = STORM_ODDS_FALLBACK
+    return _sigmoid_pct(c0 + c1 * probability + c4 * cape + c5 * clock[0] + c6 * clock[1])
+
+
+def daily_rain_odds(open_meteo_models: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    """Chance of rain tomorrow and the next two days (Argentine days), from AIFS.
+
+    See DAILY_RAIN_CALIBRATION. Each: `fecha`, `probabilidad` (%) and
+    `mm` (AIFS's rain over the day); a day AIFS doesn't fully cover is left out.
+    """
+    totals: dict[Any, list[float]] = {}
+    for hour in open_meteo_models:
+        if hour.get("precipitation_aifs") is None:
+            continue
+        # Open-Meteo's value at HH is the rain in the hour before it.
+        day = (hour["when"] - _HOUR).astimezone(_ARG_TZ).date()
+        totals.setdefault(day, []).append(hour["precipitation_aifs"])
+    today = now.astimezone(_ARG_TZ).date()
+    days = []
+    for ahead, (a, b) in enumerate(DAILY_RAIN_CALIBRATION, start=1):
+        day = today + timedelta(days=ahead)
+        values = totals.get(day, [])
+        if len(values) < 24:
+            continue
+        mm = sum(values)
+        days.append({"fecha": day.isoformat(), "probabilidad": _sigmoid_pct(a + b * math.log1p(mm)), "mm": round(mm, 1)})
+    return days
 
 
 def _odds(table: tuple[tuple[int, int], ...], probability: float | None) -> int | None:
@@ -148,21 +221,31 @@ def _logit(value: float) -> float:
 def rain_curve(open_meteo_hourly: list[dict[str, Any]], start: datetime) -> list[tuple[datetime, int]]:
     """(end of the window, % chance of rain from `start` to it), one per hour up to 6 h.
 
-    See NEXT_RAIN_CURVE_CALIBRATION. Starts at the first hour Open-Meteo has
-    from `start` on and stops where its hours run out. The windows are
-    nested, so a longer one is never less likely.
+    See NEXT_RAIN_CURVE_BLEND, or NEXT_RAIN_CURVE_CALIBRATION once an hour
+    lacks the AIFS/UKMO rain. Starts at the first hour Open-Meteo has from
+    `start` on and stops where its hours run out. The windows are nested,
+    so a longer one is never less likely.
     """
-    probabilities = {hour["when"]: hour.get("probability") for hour in open_meteo_hourly}
-    start = min((when for when in probabilities if when >= start), default=start)
+    by_hour = {hour["when"]: hour for hour in open_meteo_hourly}
+    start = min((when for when in by_hour if when >= start), default=start)
     curve: list[tuple[datetime, int]] = []
     dry = 1.0
+    aifs = ukmo = 0.0
+    blend = True
     highest = 0
-    for index, (a, b) in enumerate(NEXT_RAIN_CURVE_CALIBRATION):
-        probability = probabilities.get(start + index * _HOUR)
-        if probability is None:
+    for index, ((a, b), (ba, bb, bc, bd)) in enumerate(zip(NEXT_RAIN_CURVE_CALIBRATION, NEXT_RAIN_CURVE_BLEND)):
+        hour = by_hour.get(start + index * _HOUR)
+        if hour is None or hour.get("probability") is None:
             break
-        dry *= 1 - _odds(HOURLY_RAIN_ODDS, probability) / 100
-        highest = max(highest, round(100 / (1 + math.exp(-(a + b * _logit(1 - dry))))))
+        dry *= 1 - _odds(HOURLY_RAIN_ODDS, hour["probability"]) / 100
+        blend = blend and _has_models([hour])
+        if blend:
+            aifs += hour["precipitation_aifs"]
+            ukmo += hour["precipitation_ukmo"]
+            logit = ba + bb * _logit(1 - dry) + bc * math.log1p(aifs) + bd * math.log1p(ukmo)
+        else:
+            logit = a + b * _logit(1 - dry)
+        highest = max(highest, _sigmoid_pct(logit))
         curve.append((start + (index + 1) * _HOUR, highest))
     return curve
 
@@ -296,12 +379,18 @@ def find_next_rain_or_storm(
             )
 
     # The first hour with rain or a storm, and the first one with a storm.
-    upcoming = [h for h in open_meteo_hourly if h["when"] + timedelta(hours=1) > now and _hourly_is_rain(h)]
-    for hour in upcoming[:1] + [h for h in upcoming if _hourly_is_rain(h) == "tormenta"][:1]:
+    upcoming = []
+    for hour in open_meteo_hourly:
+        if hour["when"] + timedelta(hours=1) > now:
+            storm = storm_odds(open_meteo_hourly, hour["when"])
+            if tipo := _hourly_is_rain(hour, storm):
+                upcoming.append((hour, tipo, storm))
+    for hour, tipo, storm in upcoming[:1] + [u for u in upcoming if u[1] == "tormenta"][:1]:
         candidates.append(
             {
                 "when": hour["when"],
-                "tipo": _hourly_is_rain(hour),
+                "tipo": tipo,
+                "storm_odds": storm,
                 "source": _SOURCE_HOURLY,
                 "hourly_probability": hour.get("probability"),
                 "hour_odds": _odds(HOURLY_RAIN_ODDS, hour.get("probability")),
@@ -587,6 +676,8 @@ async def async_setup_entry(
             SMNTodayForecastSensor(coordinator, config_entry),
             SMNTomorrowForecastSensor(coordinator, config_entry),
             SMNNextRainSensor(coordinator, config_entry),
+            SMNStormOddsSensor(coordinator, config_entry),
+            SMNRainTomorrowSensor(coordinator, config_entry),
         ]
     )
 
@@ -844,6 +935,9 @@ class SMNNextRainSensor(_SMNSensorBase):
                 "el pronóstico horario de Open-Meteo, y una alerta de lluvia o tormenta para tu zona "
                 f"o el pronóstico del SMN (lluvia con {NEXT_RAIN_PROBABILITY_THRESHOLD}% o más de "
                 "probabilidad, o tormenta) cuando Open-Meteo también da lluvia en esa franja. "
+                "Del pronóstico horario, una hora cuenta como tormenta con "
+                f"{NEXT_RAIN_STORM_ODDS}% o más de probabilidad de tormenta en las 3 horas siguientes "
+                "(ver el sensor Probabilidad de tormenta). "
                 "Es una estimación, no una certeza: `probabilidad` dice cuántas veces llovió de verdad "
                 "antes de `probabilidad_hasta` en situaciones así (medido contra observaciones de "
                 "aeropuertos), y `probabilidad_hora` lo mismo sólo para la hora de inicio"
@@ -884,6 +978,8 @@ class SMNNextRainSensor(_SMNSensorBase):
         ):
             if next_any.get(key) is not None:
                 attrs[key] = next_any[key]
+        if next_any.get("storm_odds") is not None:
+            attrs["probabilidad_tormenta"] = next_any["storm_odds"]
         if next_any.get("until") is not None:
             attrs["hasta"] = next_any["until"].isoformat()
         motion = next_any.get("motion")
@@ -892,6 +988,111 @@ class SMNNextRainSensor(_SMNSensorBase):
             attrs["se_mueve_hacia"] = wind_cardinal(motion.toward_deg)
             attrs["movimiento_segun"] = motion.source
         return attrs
+
+
+_MODELS_SOURCE = "Open-Meteo: best_match, ECMWF AIFS y UK Met Office"
+
+
+class SMNStormOddsSensor(_SMNSensorBase):
+    """Probabilidad de tormenta: % chance of a thunderstorm in the next 3 hours.
+
+    See storm_odds. `proximas_horas` has the same for each 3 hours of the
+    next day, and `maxima` / `maxima_desde` the highest of them.
+    """
+
+    _attr_translation_key = "storm_odds"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:weather-lightning"
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_storm_odds")
+
+    def _windows(self) -> list[tuple[datetime, int]]:
+        hourly = self.coordinator.data.open_meteo_hourly
+        start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        windows = []
+        for index in range(8):
+            when = start + index * 3 * _HOUR
+            odds = storm_odds(hourly, when)
+            if odds is not None:
+                windows.append((when, odds))
+        return windows
+
+    @property
+    def native_value(self) -> int | None:
+        windows = self._windows()
+        return windows[0][1] if windows and windows[0][0] <= datetime.now(timezone.utc) else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        windows = self._windows()
+        hourly = self.coordinator.data.open_meteo_hourly
+        current = [hour for hour in hourly if windows and hour["when"] == windows[0][0]]
+        attrs: dict[str, Any] = {
+            "criterio": (
+                "Cuántas veces hubo tormenta (truenos en el aeropuerto o sus cercanías) en las 3 horas "
+                "siguientes en situaciones así, según la probabilidad de lluvia, la lluvia de dos "
+                "modelos más y la energía para tormentas (CAPE) que pronostica Open-Meteo, y la hora "
+                "del día. Medido contra un año de observaciones en 12 aeropuertos argentinos. "
+                f"Con {NEXT_RAIN_STORM_ODDS}% o más, Próxima lluvia o tormenta la cuenta como tormenta"
+            ),
+            "fuente": _MODELS_SOURCE if current and _has_models(current) else "Open-Meteo: best_match",
+            "proximas_horas": [
+                {"desde": when.astimezone(_ARG_TZ).isoformat(), "probabilidad": odds} for when, odds in windows
+            ],
+        }
+        if windows:
+            when, odds = max(windows, key=lambda window: window[1])
+            attrs["maxima"] = odds
+            attrs["maxima_desde"] = when.astimezone(_ARG_TZ).isoformat()
+        return attrs
+
+
+class SMNRainTomorrowSensor(_SMNSensorBase):
+    """Lluvia mañana: % chance of rain at some point tomorrow (Argentine day).
+
+    From ECMWF's AIFS, the best model for whole days at Argentine airports
+    (see daily_rain_odds). `dias` has tomorrow and the next two days, each
+    with SMN's own highest probability for the day next to it, so the
+    recorder keeps both to compare them later.
+    """
+
+    _attr_translation_key = "rain_tomorrow"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:weather-rainy"
+
+    def __init__(self, coordinator, config_entry) -> None:
+        super().__init__(coordinator, config_entry, "_rain_tomorrow")
+
+    def _days(self) -> list[dict[str, Any]]:
+        data = self.coordinator.data
+        days = daily_rain_odds(data.open_meteo_models, datetime.now(_ARG_TZ))
+        smn: dict[str, int] = {}
+        for period in data.hourly_forecast:
+            prob = period.get("rain_prob_range")
+            if prob and period.get("date"):
+                smn[period["date"]] = max(smn.get(period["date"], 0), max(prob))
+        return [{**day, "probabilidad_smn": smn.get(day["fecha"])} for day in days]
+
+    @property
+    def native_value(self) -> int | None:
+        days = self._days()
+        tomorrow = (datetime.now(_ARG_TZ) + timedelta(days=1)).date().isoformat()
+        return days[0]["probabilidad"] if days and days[0]["fecha"] == tomorrow else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "criterio": (
+                "Cuántas veces llovió algo en el día en situaciones así, según la lluvia que "
+                "pronostica el modelo AIFS de ECMWF para todo el día (el que más acertó en aeropuertos "
+                "argentinos a 1, 2 y 3 días). `probabilidad_smn` es la más alta que da el SMN ese día"
+            ),
+            "fuente": "Open-Meteo: ECMWF AIFS",
+            "dias": self._days(),
+        }
 
 
 class SMNShortTermSummarySensor(

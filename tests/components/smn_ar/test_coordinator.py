@@ -119,3 +119,46 @@ async def test_outage_does_not_refire_event() -> None:
     coordinator._fire_shortterm_alert_event_if_changed()
 
     coordinator.hass.bus.async_fire.assert_not_called()
+
+
+async def test_open_meteo_hours_carry_the_models_rain() -> None:
+    """The second request's AIFS/UKMO rain lands on each best_match hour."""
+    from custom_components.smn_ar.const import OPEN_METEO_HOURLY_FIELDS
+
+    main = {"hourly": {"time": [0, 3600], **{name: [1, 2] for name in OPEN_METEO_HOURLY_FIELDS.values()}}}
+    models = {
+        "hourly": {
+            "time": [3600, 7200],
+            "precipitation_ecmwf_aifs025_single": [0.5, 0.7],
+            "precipitation_ukmo_seamless": [0.1, None],
+        }
+    }
+    calls = []
+
+    async def get(url, params):
+        calls.append(params)
+        response = MagicMock()
+        response.json = AsyncMock(return_value=models if "models" in params else main)
+        return response
+
+    data = ArgentinaSMNData.__new__(ArgentinaSMNData)
+    data._latitude, data._longitude = -31.4, -64.2
+    data._session = MagicMock(get=get)
+    data.open_meteo_hourly = []
+    data.open_meteo_models = []
+    await data._fetch_open_meteo_hourly()
+
+    assert calls[1]["models"] == "ecmwf_aifs025_single,ukmo_seamless"
+    assert [h["precipitation_aifs"] for h in data.open_meteo_hourly] == [None, 0.5]
+    assert [h["precipitation_ukmo"] for h in data.open_meteo_hourly] == [None, 0.1]
+    assert len(data.open_meteo_models) == 2
+
+    # The models' request failing keeps what it had.
+    async def failing(url, params):
+        if "models" in params:
+            raise aiohttp.ClientError
+        return await get(url, params)
+
+    data._session = MagicMock(get=failing)
+    await data._fetch_open_meteo_hourly()
+    assert [h["precipitation_aifs"] for h in data.open_meteo_hourly] == [None, 0.5]

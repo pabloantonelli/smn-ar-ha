@@ -128,7 +128,19 @@ OPEN_METEO_HOURLY_FIELDS: Final = {
     "cloud_coverage": "cloud_cover",
     "wind_speed_700hpa": "wind_speed_700hPa",
     "wind_direction_700hpa": "wind_direction_700hPa",
+    "cape": "cape",
 }
+# Two more models' rain, in a second request (with several models Open-Meteo
+# suffixes every variable): ECMWF's AIFS and the UK Met Office's. Scored
+# against a year of METARs at 12 Argentine airports, they add the most to
+# best_match's probability, and AIFS is the best single model for whole days
+# (see DAILY_RAIN_CALIBRATION). AIFS comes in 6-hour steps spread over the
+# hours. 5 days so the whole of the day after tomorrow's next is covered.
+OPEN_METEO_MODELS: Final = {
+    "precipitation_aifs": "precipitation_ecmwf_aifs025_single",
+    "precipitation_ukmo": "precipitation_ukmo_seamless",
+}
+OPEN_METEO_MODELS_FORECAST_DAYS: Final = 5
 # WMO weather code (Open-Meteo's weather_code) -> HA condition. Clear sky
 # at night becomes clear-night in weather.py (with Open-Meteo's is_day).
 WMO_CONDITION_MAP: Final = {
@@ -368,13 +380,27 @@ WIND_CARDINAL_DIRECTIONS: Final = [
 # (the top of the range is too optimistic: "10-30%" rarely rains).
 NEXT_RAIN_PROBABILITY_THRESHOLD: Final = 40
 # Open-Meteo's hourly forecast (see OPEN_METEO_URL): an hour counts as rain
-# with this probability and amount, or as a storm (weather code 95-99) with
-# NEXT_RAIN_HOURLY_STORM_PROBABILITY. Checked against a year of METARs at 15
+# with this probability and amount. Checked against a year of METARs at 15
 # airports: rain within 3 h of an hour that passes comes ~64% of the time;
 # 40% and 0.2 mm caught fewer rains with more false alarms.
 NEXT_RAIN_HOURLY_PROBABILITY: Final = 60  # %
 NEXT_RAIN_HOURLY_MIN_PRECIPITATION: Final = 0.1  # mm
-NEXT_RAIN_HOURLY_STORM_PROBABILITY: Final = 30  # %
+# Chance of a thunderstorm (TS or VCTS in a METAR) in the 3 hours from an
+# hour: logit = c0 + c1*p + c2*log1p(AIFS mm) + c3*log1p(UKMO mm)
+# + c4*log1p(CAPE) + c5*sin(h) + c6*cos(h), with p best_match's highest
+# probability (0-1) in the 3 hours, the mm their sum, CAPE their highest
+# (J/kg) and h the UTC hour of day as an angle. STORM_ODDS_FALLBACK, without
+# the two models, when that request fails: c0 + c1*p + c4.. as above.
+# Fitted on 12 Argentine airports, Nov 2025-Nov 2026; tested on Jul-Nov
+# with a fit on the earlier months: Brier skill 35% (25% without the two
+# models), against weather codes 95-99 that caught 22% of the storms with
+# 57% false alarms.
+STORM_ODDS_CALIBRATION: Final = (-6.686, 1.519, 1.101, 0.622, 0.404, 0.041, 0.254)
+STORM_ODDS_FALLBACK: Final = (-7.085, 3.858, 0.442, 0.236, 0.248)
+# An hour with some rain (NEXT_RAIN_REFINE_*) counts as "tormenta" from this
+# chance on: there, as many storms are forecast as come (53% caught, 46%
+# false alarms, for the 3 h windows alone).
+NEXT_RAIN_STORM_ODDS: Final = 25  # %
 # The weather entity's hourly forecast shows a "drizzle" hour under both
 # of these as clouds instead (a trace the model gives little chance to).
 HOURLY_TRACE_PROBABILITY: Final = 40  # %
@@ -388,6 +414,21 @@ HOURLY_TRACE_PRECIPITATION: Final = 0.2  # mm
 NEXT_RAIN_CURVE_CALIBRATION: Final = (
     (0.103, 0.942), (-0.433, 0.889), (-0.713, 0.848), (-0.888, 0.818), (-1.007, 0.795), (-1.095, 0.776),
 )
+# The same with the AIFS and UKMO rain in the window (see OPEN_METEO_MODELS):
+# logit(P) = a + b * logit(q) + c * log1p(AIFS mm) + d * log1p(UKMO mm).
+# The curve above is the fallback when they're missing. Fitted on 12
+# airports (Nov 2025-Nov 2026); tested on Jul-Nov with a fit on the earlier
+# months, Brier skill 30-41% against 28-40% without them.
+NEXT_RAIN_CURVE_BLEND: Final = (
+    (-0.86, 0.699, 1.15, 0.822), (-1.311, 0.63, 0.843, 0.762), (-1.539, 0.58, 0.744, 0.743),
+    (-1.685, 0.539, 0.726, 0.726), (-1.786, 0.506, 0.734, 0.716), (-1.858, 0.478, 0.753, 0.699),
+)
+# Chance of rain on the day after today (then the next two), from the AIFS
+# rain over the whole Argentine day: logit = a + b * log1p(mm). Fitted
+# against METARs at 5 airports on what AIFS said 1, 2 and 3 days before
+# (Nov 2025-Nov 2026): Brier skill 49%, 46%, 46%, better than every other
+# model at 4 of the 5 airports.
+DAILY_RAIN_CALIBRATION: Final = ((-2.331, 2.633), (-2.332, 2.426), (-2.235, 2.292))
 # Cold cloud tops over the location (see nowcast.IR_RAIN_COLDNESS).
 NEXT_RAIN_SATELLITE_ODDS: Final = 80
 # The radar: (echo dBZ, % it rained within 2 h), from 11 days of SINARAME
