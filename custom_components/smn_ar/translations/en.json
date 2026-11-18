@@ -55,46 +55,46 @@
   "entity": {
     "binary_sensor": {
       "weather_alert": {
-        "name": "Weather alert"
+        "name": "Any alert"
       },
       "alert_tormenta": {
-        "name": "Thunderstorm alert"
+        "name": "Thunderstorm"
       },
       "alert_lluvia": {
-        "name": "Rain alert"
+        "name": "Rain"
       },
       "alert_nevada": {
-        "name": "Snow alert"
+        "name": "Snow"
       },
       "alert_viento": {
-        "name": "Wind alert"
+        "name": "Wind"
       },
       "alert_viento_zonda": {
-        "name": "Zonda wind alert"
+        "name": "Zonda wind"
       },
       "alert_altas_temperaturas": {
-        "name": "High temperature alert"
+        "name": "High temperatures"
       },
       "alert_bajas_temperaturas": {
-        "name": "Low temperature alert"
+        "name": "Low temperatures"
       },
       "alert_niebla": {
-        "name": "Fog alert"
+        "name": "Fog"
       },
       "alert_polvo": {
-        "name": "Dust alert"
+        "name": "Dust"
       },
       "alert_humo": {
-        "name": "Smoke alert"
+        "name": "Smoke"
       },
       "alert_ceniza_volcanica": {
-        "name": "Volcanic ash alert"
+        "name": "Volcanic ash"
       },
       "short_term_alert": {
-        "name": "Short-term alert"
+        "name": "Any warning"
       },
       "hail_alert": {
-        "name": "Hail alert"
+        "name": "Hail"
       }
     },
     "camera": {
@@ -102,27 +102,27 @@
         "name": "Radar"
       },
       "satellite_country": {
-        "name": "Satellite Argentina"
+        "name": "Satellite"
       },
       "satellite_country_infrared": {
-        "name": "Satellite Argentina Infrared"
+        "name": "Satellite infrared"
       },
       "satellite_province": {
-        "name": "Satellite province"
+        "name": "Province satellite"
       },
       "satellite_province_infrared": {
-        "name": "Satellite province Infrared"
+        "name": "Province satellite infrared"
       },
       "country_alerts": {
-        "name": "Warnings Argentina"
+        "name": "Warnings"
       }
     },
     "sensor": {
       "short_term_summary": {
-        "name": "Short-term forecast"
+        "name": "Summary"
       },
       "nationwide_avisos": {
-        "name": "Nationwide avisos by province"
+        "name": "Warnings nationwide"
       },
       "current_temperature": {
         "name": "Temperature"
@@ -134,25 +134,25 @@
         "name": "Humidity"
       },
       "current_wind_speed": {
-        "name": "Wind speed"
+        "name": "Wind"
       },
       "current_wind_bearing": {
         "name": "Wind direction"
       },
       "today_forecast": {
-        "name": "Today's forecast"
+        "name": "Today"
       },
       "tomorrow_forecast": {
-        "name": "Tomorrow's forecast"
+        "name": "Tomorrow"
       },
       "next_rain": {
         "name": "Next rain or storm"
       },
       "storm_odds": {
-        "name": "Thunderstorm chance"
+        "name": "Storm chance next 3 h"
       },
       "rain_tomorrow": {
-        "name": "Rain tomorrow"
+        "name": "Rain chance tomorrow"
       }
     }
   }

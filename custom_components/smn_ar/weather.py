@@ -18,13 +18,12 @@ from homeassistant.components.weather import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONF_NAME,
     UnitOfPressure,
     UnitOfSpeed,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.sun import is_up
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -34,13 +33,14 @@ from .const import (
     ATTR_MAP,
     CONDITION_ID_MAP,
     DOMAIN,
-    FORECAST_MAP,
     HOURLY_RAIN_ODDS,
     HOURLY_TRACE_PRECIPITATION,
     HOURLY_TRACE_PROBABILITY,
     OPEN_METEO_ATTRIBUTION,
     WMO_CONDITION_MAP,
 )
+from . import devices
+from .devices import device_info
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -146,6 +146,7 @@ class ArgentinaSMNWeather(
 ):
     """Implementation of an SMN weather entity."""
 
+    _device_group = devices.CURRENT
     _smn_attribution = "Data provided by Servicio Meteorológico Nacional Argentina"
     _attr_has_entity_name = True
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
@@ -176,13 +177,7 @@ class ArgentinaSMNWeather(
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        return device_info(self.hass, self._config_entry, self._device_group)
 
     @property
     def condition(self) -> str | None:

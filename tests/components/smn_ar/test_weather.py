@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.smn_ar.const import DOMAIN
 
-ENTITY_ID = "weather.ciudad_de_buenos_aires"
+ENTITY_ID = "weather.ciudad_de_buenos_aires_clima_actual"
 CURRENT = {
     "temperature": 22.5,
     "humidity": 65,
@@ -23,6 +23,7 @@ CURRENT = {
 
 
 async def _setup(hass: HomeAssistant, daily: list | None = None) -> None:
+    hass.config.language = "es"
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Ciudad de Buenos Aires",
@@ -65,7 +66,7 @@ async def test_weather_entity_daily_forecast(hass: HomeAssistant, enable_custom_
 
 async def test_weather_entity_name(hass: HomeAssistant, enable_custom_integrations) -> None:
     await _setup(hass)
-    assert hass.states.get(ENTITY_ID).attributes["friendly_name"] == "Ciudad de Buenos Aires"
+    assert hass.states.get(ENTITY_ID).attributes["friendly_name"] == "Ciudad de Buenos Aires · Clima actual"
 
 
 @pytest.mark.asyncio

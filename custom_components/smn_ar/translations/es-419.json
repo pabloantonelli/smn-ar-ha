@@ -55,46 +55,46 @@
   "entity": {
     "binary_sensor": {
       "weather_alert": {
-        "name": "Alerta meteorológica"
+        "name": "Cualquier alerta"
       },
       "alert_tormenta": {
-        "name": "Alerta por tormenta"
+        "name": "Tormenta"
       },
       "alert_lluvia": {
-        "name": "Alerta por lluvia"
+        "name": "Lluvia"
       },
       "alert_nevada": {
-        "name": "Alerta por nevada"
+        "name": "Nevada"
       },
       "alert_viento": {
-        "name": "Alerta por viento"
+        "name": "Viento"
       },
       "alert_viento_zonda": {
-        "name": "Alerta por viento zonda"
+        "name": "Zonda"
       },
       "alert_altas_temperaturas": {
-        "name": "Alerta por altas temperaturas"
+        "name": "Altas temperaturas"
       },
       "alert_bajas_temperaturas": {
-        "name": "Alerta por bajas temperaturas"
+        "name": "Bajas temperaturas"
       },
       "alert_niebla": {
-        "name": "Alerta por niebla"
+        "name": "Niebla"
       },
       "alert_polvo": {
-        "name": "Alerta por polvo"
+        "name": "Polvo"
       },
       "alert_humo": {
-        "name": "Alerta por humo"
+        "name": "Humo"
       },
       "alert_ceniza_volcanica": {
-        "name": "Alerta por ceniza volcánica"
+        "name": "Ceniza volcánica"
       },
       "short_term_alert": {
-        "name": "Alerta a corto plazo"
+        "name": "Cualquier aviso"
       },
       "hail_alert": {
-        "name": "Alerta por granizo"
+        "name": "Granizo"
       }
     },
     "camera": {
@@ -102,27 +102,27 @@
         "name": "Radar"
       },
       "satellite_country": {
-        "name": "Satélite Argentina"
+        "name": "Satélite"
       },
       "satellite_country_infrared": {
-        "name": "Satélite Argentina Infrarrojo"
+        "name": "Satélite infrarrojo"
       },
       "satellite_province": {
         "name": "Satélite provincia"
       },
       "satellite_province_infrared": {
-        "name": "Satélite provincia Infrarrojo"
+        "name": "Satélite provincia infrarrojo"
       },
       "country_alerts": {
-        "name": "Avisos Argentina"
+        "name": "Avisos"
       }
     },
     "sensor": {
       "short_term_summary": {
-        "name": "Pronóstico de corto plazo"
+        "name": "Resumen"
       },
       "nationwide_avisos": {
-        "name": "Avisos por provincia (país)"
+        "name": "Avisos en el país"
       },
       "current_temperature": {
         "name": "Temperatura"
@@ -134,25 +134,25 @@
         "name": "Humedad"
       },
       "current_wind_speed": {
-        "name": "Velocidad del viento"
+        "name": "Viento"
       },
       "current_wind_bearing": {
         "name": "Dirección del viento"
       },
       "today_forecast": {
-        "name": "Pronóstico de hoy"
+        "name": "Hoy"
       },
       "tomorrow_forecast": {
-        "name": "Pronóstico de mañana"
+        "name": "Mañana"
       },
       "next_rain": {
         "name": "Próxima lluvia o tormenta"
       },
       "storm_odds": {
-        "name": "Probabilidad de tormenta"
+        "name": "Chance de tormenta en 3 h"
       },
       "rain_tomorrow": {
-        "name": "Lluvia mañana"
+        "name": "Chance de lluvia mañana"
       }
     }
   }

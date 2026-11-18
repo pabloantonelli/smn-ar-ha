@@ -22,13 +22,12 @@ from homeassistant.components.weather import ATTR_CONDITION_LIGHTNING_RAINY
 from homeassistant.const import (
     CONF_LATITUDE,
     CONF_LONGITUDE,
-    CONF_NAME,
     PERCENTAGE,
     UnitOfSpeed,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -61,6 +60,8 @@ from .const import (
     STORM_ODDS_FALLBACK,
     wind_cardinal,
 )
+from . import devices
+from .devices import device_info
 from .coordinator import ArgentinaSMNDataUpdateCoordinator
 from .nowcast import SOURCE_RADAR, SOURCE_SATELLITE, Nowcast, aviso_arrival, steering_motion
 from .weather import format_condition
@@ -685,6 +686,8 @@ async def async_setup_entry(
 class _SMNSensorBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], SensorEntity):
     """Shared device_info boilerplate for the standalone current/forecast sensors."""
 
+    _device_group = devices.CURRENT
+
     _attr_has_entity_name = True
 
     def __init__(
@@ -699,12 +702,7 @@ class _SMNSensorBase(CoordinatorEntity[ArgentinaSMNDataUpdateCoordinator], Senso
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        return device_info(self.hass, self._config_entry, self._device_group)
 
 
 class SMNTemperatureSensor(_SMNSensorBase):
@@ -819,6 +817,8 @@ class _SMNDailyForecastSensor(_SMNSensorBase):
     has one state value but dashboards/automations may want the numbers too.
     """
 
+    _device_group = devices.FORECAST
+
     _day_index: int
 
     @property
@@ -881,6 +881,8 @@ class SMNNextRainSensor(_SMNSensorBase):
     any source's horizon.
     """
 
+    _device_group = devices.FORECAST
+
     _attr_translation_key = "next_rain"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_icon = "mdi:weather-pouring"
@@ -937,7 +939,7 @@ class SMNNextRainSensor(_SMNSensorBase):
                 "probabilidad, o tormenta) cuando Open-Meteo también da lluvia en esa franja. "
                 "Del pronóstico horario, una hora cuenta como tormenta con "
                 f"{NEXT_RAIN_STORM_ODDS}% o más de probabilidad de tormenta en las 3 horas siguientes "
-                "(ver el sensor Probabilidad de tormenta). "
+                "(ver el sensor Chance de tormenta en 3 h). "
                 "Es una estimación, no una certeza: `probabilidad` dice cuántas veces llovió de verdad "
                 "antes de `probabilidad_hasta` en situaciones así (medido contra observaciones de "
                 "aeropuertos), y `probabilidad_hora` lo mismo sólo para la hora de inicio"
@@ -994,11 +996,13 @@ _MODELS_SOURCE = "Open-Meteo: best_match, ECMWF AIFS y UK Met Office"
 
 
 class SMNStormOddsSensor(_SMNSensorBase):
-    """Probabilidad de tormenta: % chance of a thunderstorm in the next 3 hours.
+    """Chance de tormenta en 3 h: % chance of a thunderstorm in the next 3 hours.
 
     See storm_odds. `proximas_horas` has the same for each 3 hours of the
     next day, and `maxima` / `maxima_desde` the highest of them.
     """
+
+    _device_group = devices.FORECAST
 
     _attr_translation_key = "storm_odds"
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -1050,13 +1054,15 @@ class SMNStormOddsSensor(_SMNSensorBase):
 
 
 class SMNRainTomorrowSensor(_SMNSensorBase):
-    """Lluvia mañana: % chance of rain at some point tomorrow (Argentine day).
+    """Chance de lluvia mañana: % chance of rain at some point tomorrow (Argentine day).
 
     From ECMWF's AIFS, the best model for whole days at Argentine airports
     (see daily_rain_odds). `dias` has tomorrow and the next two days, each
     with SMN's own highest probability for the day next to it, so the
     recorder keeps both to compare them later.
     """
+
+    _device_group = devices.FORECAST
 
     _attr_translation_key = "rain_tomorrow"
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -1100,6 +1106,8 @@ class SMNShortTermSummarySensor(
 ):
     """Human-readable short-term forecast/alert summary, in Spanish."""
 
+    _device_group = devices.FORECAST
+
     _attr_has_entity_name = True
     _attr_translation_key = "short_term_summary"
     _attr_icon = "mdi:text-box-outline"
@@ -1115,12 +1123,7 @@ class SMNShortTermSummarySensor(
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        return device_info(self.hass, self._config_entry, self._device_group)
 
     @property
     def native_value(self) -> str:
@@ -1157,6 +1160,8 @@ class SMNNationwideAvisosSensor(
     config entry in this Home Assistant instance.
     """
 
+    _device_group = devices.NEARBY
+
     _attr_has_entity_name = True
     _attr_translation_key = "nationwide_avisos"
     _attr_icon = "mdi:map-marker-alert-outline"
@@ -1172,12 +1177,7 @@ class SMNNationwideAvisosSensor(
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._config_entry.entry_id)},
-            name=self._config_entry.data.get(CONF_NAME, "SMN Weather"),
-            manufacturer="Servicio Meteorológico Nacional",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        return device_info(self.hass, self._config_entry, self._device_group)
 
     @property
     def native_value(self) -> str:
